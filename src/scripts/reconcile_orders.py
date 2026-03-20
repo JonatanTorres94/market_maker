@@ -1,3 +1,4 @@
+#src/scripts/reconcile_orders.py
 from src.config.settings import get_settings
 from src.core.logger import setup_logger
 from src.exchange.binance_client import create_binance_client
@@ -28,6 +29,8 @@ def main():
     logger.info("Missing orders: %s", summary.missing_orders)
     logger.info("Coverage ratio: %s", summary.coverage_ratio)
     logger.info("Bulk fetched orders: %s", summary.bulk_fetched_orders)
+    logger.info("Bulk matched journal orders: %s", summary.bulk_matched_orders)
+    logger.info("Bulk pages fetched: %s", summary.bulk_pages_fetched)
     logger.info("Fallback requested orders: %s", summary.fallback_requested_orders)
     logger.info("Fallback resolved orders: %s", summary.fallback_resolved_orders)
     logger.info("FILLED: %s", summary.filled_orders)

@@ -55,7 +55,17 @@ class InventoryState:
     base_asset: str
     quote_asset: str
     base_free: Decimal
-    quote_free: Decimal
+    base_locked: Decimal = Decimal("0")
+    quote_free: Decimal = Decimal("0")
+    quote_locked: Decimal = Decimal("0")
+
+    @property
+    def base_total(self) -> Decimal:
+        return self.base_free + self.base_locked
+
+    @property
+    def quote_total(self) -> Decimal:
+        return self.quote_free + self.quote_locked
 
 
 @dataclass(frozen=True)
@@ -80,7 +90,11 @@ class CycleSnapshot:
     spread: Decimal
     mid_price: Decimal
     base_free: Decimal
+    base_locked: Decimal
+    base_total: Decimal
     quote_free: Decimal
+    quote_locked: Decimal
+    quote_total: Decimal
     inventory_bias: str
     proposed_bid: Optional[Decimal]
     proposed_ask: Optional[Decimal]
@@ -109,7 +123,11 @@ class InventoryPnL:
     timestamp: str
     symbol: str
     base_free: Decimal
+    base_locked: Decimal
+    base_total: Decimal
     quote_free: Decimal
+    quote_locked: Decimal
+    quote_total: Decimal
     mid_price: Decimal
     mark_to_market_equity: Decimal
 
@@ -139,8 +157,10 @@ class ReconciliationSummary:
     open_orders: int
     partially_filled_orders: int
     bulk_fetched_orders: int
-    fallback_requested_orders: int
-    fallback_resolved_orders: int
+    bulk_matched_orders: int = 0
+    bulk_pages_fetched: int = 0
+    fallback_requested_orders: int = 0
+    fallback_resolved_orders: int = 0
 
 
 @dataclass(frozen=True)

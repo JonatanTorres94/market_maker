@@ -96,3 +96,22 @@ class OrderStatusSyncedEvent:
     executed_qty: Decimal
     status: str
     updated_at: str
+
+@dataclass(frozen=True)
+class ExecutionReceivedEvent:
+    occurred_at: str
+    exchange: str
+    account: str
+    symbol: str
+    trade_id: int
+    order_id: int
+    client_order_id: str
+    side: str
+    price: Decimal
+    qty: Decimal
+    quote_qty: Decimal
+    commission: Decimal
+    commission_asset: str
+    is_maker: bool
+    executed_at: str
+    source: str

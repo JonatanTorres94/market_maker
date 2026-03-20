@@ -1,4 +1,13 @@
-
-
+# Entorno virtual y variables
 .env
+venv/
+env/
+
+# Python cache
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
 journals/
+*.log

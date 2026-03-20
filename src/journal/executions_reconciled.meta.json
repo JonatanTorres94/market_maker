@@ -1,0 +1,9 @@
+{
+  "symbol": "BTCUSDT",
+  "start_ms": 1773947676406,
+  "rows_written": 609,
+  "raw_rows_seen": 2327,
+  "source_file": "data/journals/executions.csv",
+  "generated_at": "2026-03-19T21:37:29.219000+00:00",
+  "notes": "Filtered by session start and deduplicated by (exchange, account, symbol, trade_id). Prioritized rows with commission_in_quote when available."
+}

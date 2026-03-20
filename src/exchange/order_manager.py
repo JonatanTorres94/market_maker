@@ -121,14 +121,16 @@ class OrderManager:
 
         balances = {item["asset"]: item for item in account["balances"]}
 
-        base_balance = balances.get(base_asset, {"free": "0"})
-        quote_balance = balances.get(quote_asset, {"free": "0"})
+        base_balance = balances.get(base_asset, {"free": "0", "locked": "0"})
+        quote_balance = balances.get(quote_asset, {"free": "0", "locked": "0"})
 
         return InventoryState(
             base_asset=base_asset,
             quote_asset=quote_asset,
             base_free=Decimal(base_balance["free"]),
+            base_locked=Decimal(base_balance.get("locked", "0")),
             quote_free=Decimal(quote_balance["free"]),
+            quote_locked=Decimal(quote_balance.get("locked", "0")),
         )
 
     def get_order(self, symbol: str, order_id: int) -> dict:
@@ -154,6 +156,31 @@ class OrderManager:
             params["orderId"] = order_id
 
         return self.client.get_all_orders(**params)
+
+
+    def get_my_trades(
+        self,
+        symbol: str,
+        limit: int | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        from_id: int | None = None,
+        order_id: int | None = None,
+    ) -> list[dict]:
+        params = {"symbol": symbol}
+
+        if limit is not None:
+            params["limit"] = limit
+        if start_time is not None:
+            params["startTime"] = start_time
+        if end_time is not None:
+            params["endTime"] = end_time
+        if from_id is not None:
+            params["fromId"] = from_id
+        if order_id is not None:
+            params["orderId"] = order_id
+
+        return self.client.get_my_trades(**params)
 
     def get_order_safe(self, symbol: str, order_id: int) -> dict | None:
         try:

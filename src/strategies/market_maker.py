@@ -24,7 +24,7 @@ class MarketMakerStrategy:
         self.risk_manager = risk_manager
 
     def _compute_skew_factor(self, inventory: InventoryState) -> Decimal:
-        deviation = inventory.base_free - self.config.inventory_target
+        deviation = inventory.base_total - self.config.inventory_target
 
         if self.config.inventory_tolerance == Decimal("0"):
             return Decimal("0")

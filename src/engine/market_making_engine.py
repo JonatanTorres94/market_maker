@@ -1,3 +1,4 @@
+# src/engine/market_making_engine.py
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -10,14 +11,22 @@ from src.analytics.pnl import PnLService
 from src.config.settings import InfrastructureSettings
 from src.config.symbol_config import SymbolTradingConfig
 from src.core.logger import setup_logger
-from src.domain.events import OrderCancelRequestedEvent, OrderPlacedEvent, OrderStatusSyncedEvent
+from src.domain.events import (
+    ExecutionReceivedEvent,
+    OrderCancelRequestedEvent,
+    OrderPlacedEvent,
+    OrderStatusSyncedEvent,
+)
+from src.domain.execution import Execution
 from src.domain.models import BestBidAsk, CycleSnapshot, OrderPlacementRecord, OrderRequest
+from src.engine.execution_store import ExecutionStore
 from src.engine.order_state_store import OrderStateStore
 from src.engine.quote_lifecycle import QuoteLifecycleConfig, QuoteLifecyclePolicy
 from src.exchange.exchange_info import ExchangeInfoService
 from src.exchange.order_manager import OrderManager
 from src.exchange.ws_market_stream import WsMarketDataStream
 from src.exchange.ws_user_stream import WsUserDataStream
+from src.journal.execution_journal import ExecutionJournal
 from src.journal.trade_journal import TradeJournal
 from src.risk.risk_manager import RiskManager
 from src.strategies.market_maker import MarketMakerConfig, MarketMakerStrategy
@@ -39,7 +48,9 @@ class MarketMakingEngine:
         self.exchange_info = ExchangeInfoService(client)
         self.order_manager = OrderManager(client)
         self.journal = TradeJournal()
+        self.execution_journal = ExecutionJournal()
         self.state_store = OrderStateStore()
+        self.execution_store = ExecutionStore()
 
         self.ws_manager = ThreadedWebsocketManager(
             api_key=self.infrastructure.binance_api_key,
@@ -142,9 +153,13 @@ class MarketMakingEngine:
                         market.mid_price,
                     )
                     self.logger.info(
-                        "Inventory | base=%s quote=%s bias=%s equity=%s",
+                        "Inventory | base_free=%s base_locked=%s base_total=%s quote_free=%s quote_locked=%s quote_total=%s bias=%s equity=%s",
                         inventory.base_free,
+                        inventory.base_locked,
+                        inventory.base_total,
                         inventory.quote_free,
+                        inventory.quote_locked,
+                        inventory.quote_total,
                         inventory_bias,
                         equity.mark_to_market_equity,
                     )
@@ -186,7 +201,11 @@ class MarketMakingEngine:
                             spread=market.spread,
                             mid_price=market.mid_price,
                             base_free=inventory.base_free,
+                            base_locked=inventory.base_locked,
+                            base_total=inventory.base_total,
                             quote_free=inventory.quote_free,
+                            quote_locked=inventory.quote_locked,
+                            quote_total=inventory.quote_total,
                             inventory_bias=inventory_bias,
                             proposed_bid=quote.bid_price,
                             proposed_ask=quote.ask_price,
@@ -347,12 +366,50 @@ class MarketMakingEngine:
         if not events:
             return
 
+        status_events_applied = 0
+        new_executions_recorded = 0
+
         for event in events:
             if event.symbol != self.symbol:
                 continue
-            self.state_store.apply_status_sync(event)
 
-        self.logger.info("Applied %s execution report events from user stream", len(events))
+            if isinstance(event, OrderStatusSyncedEvent):
+                self.state_store.apply_status_sync(event)
+                status_events_applied += 1
+                continue
+
+            if isinstance(event, ExecutionReceivedEvent):
+                execution = Execution(
+                    exchange=event.exchange,
+                    account=event.account,
+                    symbol=event.symbol,
+                    trade_id=event.trade_id,
+                    order_id=event.order_id,
+                    client_order_id=event.client_order_id,
+                    side=event.side,
+                    price=event.price,
+                    qty=event.qty,
+                    quote_qty=event.quote_qty,
+                    commission=event.commission,
+                    commission_asset=event.commission_asset,
+                    commission_in_quote=None,
+                    commission_fx_rate=None,
+                    commission_fx_symbol=None,
+                    commission_fx_timestamp=None,
+                    is_maker=event.is_maker,
+                    executed_at=event.executed_at,
+                    source=event.source,
+                )
+                if self.execution_store.upsert(execution):
+                    self.execution_journal.record_execution(execution)
+                    new_executions_recorded += 1
+
+        self.logger.info(
+            "Applied user stream events | status_updates=%s new_executions=%s total_events=%s",
+            status_events_applied,
+            new_executions_recorded,
+            len(events),
+        )
 
     def _sync_active_orders_via_rest(self) -> None:
         active_orders = self.state_store.get_active_orders(self.symbol)
