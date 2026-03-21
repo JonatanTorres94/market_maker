@@ -1,3 +1,4 @@
+#src/config/settings.py
 import os
 from dataclasses import dataclass
 from decimal import Decimal
@@ -69,7 +70,9 @@ def get_settings() -> AppSettings:
         raise ValueError("At least one symbol must be configured in ENABLED_SYMBOLS")
 
     infrastructure = InfrastructureSettings(
-        account_name=os.getenv("ACCOUNT_NAME", "default"),
+        account_name = os.getenv("ACCOUNT_NAME")
+        if not account_name:
+            raise ValueError("Missing ACCOUNT_NAME in environment variables")
         binance_api_key=api_key,
         binance_secret=secret,
         binance_testnet=_get_bool("BINANCE_TESTNET", True),

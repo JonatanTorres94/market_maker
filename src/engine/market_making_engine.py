@@ -19,14 +19,13 @@ from src.domain.events import (
 )
 from src.domain.execution import Execution
 from src.domain.models import BestBidAsk, CycleSnapshot, OrderPlacementRecord, OrderRequest
-from src.engine.execution_store import ExecutionStore
+from src.engine.execution_service import ExecutionService
 from src.engine.order_state_store import OrderStateStore
 from src.engine.quote_lifecycle import QuoteLifecycleConfig, QuoteLifecyclePolicy
 from src.exchange.exchange_info import ExchangeInfoService
 from src.exchange.order_manager import OrderManager
 from src.exchange.ws_market_stream import WsMarketDataStream
 from src.exchange.ws_user_stream import WsUserDataStream
-from src.journal.execution_journal import ExecutionJournal
 from src.journal.trade_journal import TradeJournal
 from src.risk.risk_manager import RiskManager
 from src.strategies.market_maker import MarketMakerConfig, MarketMakerStrategy
@@ -38,6 +37,8 @@ class MarketMakingEngine:
         client,
         infrastructure: InfrastructureSettings,
         symbol_config: SymbolTradingConfig,
+        execution_service: ExecutionService,
+        order_manager: OrderManager | None = None,
     ):
         self.logger = setup_logger("market_making_engine")
         self.client = client
@@ -46,11 +47,11 @@ class MarketMakingEngine:
         self.symbol = symbol_config.symbol
 
         self.exchange_info = ExchangeInfoService(client)
-        self.order_manager = OrderManager(client)
+        self.order_manager = order_manager or OrderManager(client)
+        self.execution_service = execution_service
+
         self.journal = TradeJournal()
-        self.execution_journal = ExecutionJournal()
         self.state_store = OrderStateStore()
-        self.execution_store = ExecutionStore()
 
         self.ws_manager = ThreadedWebsocketManager(
             api_key=self.infrastructure.binance_api_key,
@@ -89,6 +90,7 @@ class MarketMakingEngine:
         )
 
         self._last_rest_sync_at = 0.0
+        self._last_execution_rest_sync_at = 0.0
         self._ws_started = False
 
     def run(self) -> None:
@@ -104,6 +106,9 @@ class MarketMakingEngine:
 
                     if self._should_run_rest_sync():
                         self._sync_active_orders_via_rest()
+
+                    if self._should_run_execution_rest_sync():
+                        self._reconcile_executions_via_rest()
 
                     market_event = self.market_stream.get_latest_event(
                         timeout=self.infrastructure.market_event_timeout_seconds
@@ -233,8 +238,12 @@ class MarketMakingEngine:
                         )
 
                     self._apply_user_stream_events()
+
                     if self._should_run_rest_sync(force=True):
                         self._sync_active_orders_via_rest()
+
+                    if self._should_run_execution_rest_sync(force=True):
+                        self._reconcile_executions_via_rest()
 
                     self._log_local_state()
                     self._prune_terminal_cache_if_needed()
@@ -258,17 +267,20 @@ class MarketMakingEngine:
             self.logger.info("Initiating graceful shutdown...")
             self._apply_user_stream_events()
             self._sync_active_orders_via_rest()
+            self._reconcile_executions_via_rest()
 
             canceled_count = self._cancel_all_tracked_active_orders()
             self.logger.info("Canceled %s active orders on shutdown", canceled_count)
 
             self._sync_active_orders_via_rest()
+            self._reconcile_executions_via_rest()
             self._log_local_state()
         except Exception as exc:
             self.logger.exception("Error during shutdown: %s", exc)
         finally:
             self._stop_streams()
             self.logger.info("Engine shutdown complete.")
+
     def _start_streams(self) -> None:
         if self._ws_started:
             return
@@ -368,6 +380,8 @@ class MarketMakingEngine:
 
         status_events_applied = 0
         new_executions_recorded = 0
+        updated_executions_recorded = 0
+        duplicate_executions_ignored = 0
 
         for event in events:
             if event.symbol != self.symbol:
@@ -400,14 +414,21 @@ class MarketMakingEngine:
                     executed_at=event.executed_at,
                     source=event.source,
                 )
-                if self.execution_store.upsert(execution):
-                    self.execution_journal.record_execution(execution)
+
+                result = self.execution_service.on_stream_execution(execution)
+                if result.inserted:
                     new_executions_recorded += 1
+                elif result.updated:
+                    updated_executions_recorded += 1
+                else:
+                    duplicate_executions_ignored += 1
 
         self.logger.info(
-            "Applied user stream events | status_updates=%s new_executions=%s total_events=%s",
+            "Applied user stream events | status_updates=%s new_executions=%s updated_executions=%s duplicate_executions=%s total_events=%s",
             status_events_applied,
             new_executions_recorded,
+            updated_executions_recorded,
+            duplicate_executions_ignored,
             len(events),
         )
 
@@ -434,11 +455,40 @@ class MarketMakingEngine:
 
         self._last_rest_sync_at = time.monotonic()
 
+    def _reconcile_executions_via_rest(self) -> None:
+        try:
+            summary = self.execution_service.reconcile_symbol(
+                symbol=self.symbol,
+                limit=1000,
+                max_pages=1,
+            )
+            self.logger.info(
+                "Execution REST sync | fetched=%s inserted=%s updated=%s duplicates=%s pages=%s range=[%s,%s]",
+                summary.fetched,
+                summary.inserted,
+                summary.updated,
+                summary.duplicates,
+                summary.pages_fetched,
+                summary.from_trade_id,
+                summary.to_trade_id,
+            )
+        except BinanceAPIException as exc:
+            self.logger.warning("Execution REST reconciliation failed for symbol=%s: %s", self.symbol, exc)
+        finally:
+            self._last_execution_rest_sync_at = time.monotonic()
+
     def _should_run_rest_sync(self, force: bool = False) -> bool:
         if force:
             return True
 
         elapsed = time.monotonic() - self._last_rest_sync_at
+        return elapsed >= self.infrastructure.rest_sync_interval_seconds
+
+    def _should_run_execution_rest_sync(self, force: bool = False) -> bool:
+        if force:
+            return True
+
+        elapsed = time.monotonic() - self._last_execution_rest_sync_at
         return elapsed >= self.infrastructure.rest_sync_interval_seconds
 
     def _prune_terminal_cache_if_needed(self) -> None:
@@ -462,11 +512,25 @@ class MarketMakingEngine:
         market_health = self.market_stream.health()
         user_health = self.user_stream.health()
 
+        execution_position = self.execution_service.get_position(self.symbol)
+        execution_avg_cost = self.execution_service.get_avg_cost(self.symbol)
+        execution_realized_pnl = self.execution_service.get_realized_pnl(self.symbol)
+        execution_count = self.execution_service.get_total_executions(self.symbol)
+        last_reconciled_trade_id = self.execution_service.get_last_reconciled_trade_id(self.symbol)
+
         self.logger.info(
             "Local order state | active=%s terminal=%s counts=%s",
             active_count,
             terminal_count,
             counts,
+        )
+        self.logger.info(
+            "Execution financial state | position=%s avg_cost=%s realized_pnl=%s applied_executions=%s last_trade_id=%s",
+            execution_position,
+            execution_avg_cost,
+            execution_realized_pnl,
+            execution_count,
+            last_reconciled_trade_id,
         )
         self.logger.info(
             "Stream health | market_msgs=%s market_parse_errors=%s user_msgs=%s exec_reports=%s user_parse_errors=%s",
