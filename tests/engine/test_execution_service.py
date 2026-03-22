@@ -384,3 +384,69 @@ def test_symbol_mismatch_raises(tmp_path):
 
     with pytest.raises(ValueError, match="ExecutionService is bound to symbol=BTCUSDT"):
         service.on_stream_execution(execution)
+
+def test_reconcile_symbol_uses_start_time_only_before_cursor_exists(tmp_path):
+    page_1 = [
+        {
+            "id": 201,
+            "orderId": 7001,
+            "price": "100",
+            "qty": "1",
+            "quoteQty": "100",
+            "commission": "0",
+            "commissionAsset": "USDT",
+            "time": 1710781945199,
+            "isBuyer": True,
+            "isMaker": True,
+            "clientOrderId": "",
+        }
+    ]
+
+    fake_order_manager = FakeOrderManager(pages=[page_1, []])
+
+    service = ExecutionService(
+        symbol="BTCUSDT",
+        account_name="default",
+        order_manager=fake_order_manager,
+        execution_store=ExecutionStore(),
+        execution_journal=InMemoryExecutionJournal(),
+        ledger=ExecutionLedger(
+            journal_path=str(tmp_path / "execution_ledger.csv"),
+            snapshot_path=str(tmp_path / "execution_ledger_snapshot.json"),
+            snapshot_every=0,
+        ),
+        fee_normalizer=FeeNormalizer(),
+    )
+
+    summary_1 = service.reconcile_symbol(
+        "BTCUSDT",
+        start_time_ms=1234567890000,
+        limit=1000,
+        max_pages=1,
+    )
+
+    assert summary_1.fetched == 1
+    assert summary_1.inserted == 1
+    assert summary_1.used_start_time_ms == 1234567890000
+    assert summary_1.used_from_id is None
+
+    first_call = fake_order_manager.calls[0]
+    assert first_call["start_time"] == 1234567890000
+    assert first_call["from_id"] is None
+
+    fake_order_manager.pages = [[]]
+
+    summary_2 = service.reconcile_symbol(
+        "BTCUSDT",
+        start_time_ms=9999999999999,
+        limit=1000,
+        max_pages=1,
+    )
+
+    assert summary_2.fetched == 0
+    assert summary_2.used_start_time_ms is None
+    assert summary_2.used_from_id == 202
+
+    second_call = fake_order_manager.calls[-1]
+    assert second_call["start_time"] is None
+    assert second_call["from_id"] == 202

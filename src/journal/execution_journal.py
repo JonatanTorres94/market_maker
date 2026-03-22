@@ -1,10 +1,13 @@
 #src/journal/execution_journal.py
 from src.domain.execution import Execution
 from src.journal.csv_journal import CsvJournalWriter
+from src.core.run_paths import get_journal_base_path
 
 
 class ExecutionJournal:
-    def __init__(self, base_path: str = "data/journals"):
+    def __init__(self, base_path: str | None = None):
+        base_path = base_path or get_journal_base_path()
+        
         self.writer = CsvJournalWriter(
             filepath=f"{base_path}/executions.csv",
             fieldnames=[

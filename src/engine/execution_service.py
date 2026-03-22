@@ -24,6 +24,8 @@ class ExecutionReconciliationResult:
     pages_fetched: int
     from_trade_id: int | None
     to_trade_id: int | None
+    used_start_time_ms: int | None
+    used_from_id: int | None
 
 
 class ExecutionService:
@@ -149,14 +151,21 @@ class ExecutionService:
     def reconcile_symbol(
         self,
         symbol: str,
+        start_time_ms: int | None = None,
         limit: int = 1000,
         max_pages: int = 1,
     ) -> ExecutionReconciliationResult:
         self._validate_symbol(symbol)
 
-        next_from_id = self._last_reconciled_trade_id_by_symbol.get(symbol)
-        if next_from_id is not None:
-            next_from_id += 1
+        last_trade_id = self._last_reconciled_trade_id_by_symbol.get(symbol)
+
+        next_from_id: int | None = None
+        effective_start_time_ms: int | None = None
+
+        if last_trade_id is not None:
+            next_from_id = last_trade_id + 1
+        else:
+            effective_start_time_ms = start_time_ms
 
         fetched = 0
         inserted = 0
@@ -164,12 +173,22 @@ class ExecutionService:
         duplicates = 0
         pages_fetched = 0
         first_trade_id: int | None = None
-        last_trade_id: int | None = None
+        last_seen_trade_id: int | None = None
+
+        self.logger.info(
+            "Starting execution REST reconciliation | symbol=%s start_time_ms=%s from_id=%s limit=%s max_pages=%s",
+            symbol,
+            effective_start_time_ms,
+            next_from_id,
+            limit,
+            max_pages,
+        )
 
         for _ in range(max_pages):
             rows = self.order_manager.get_my_trades(
                 symbol=symbol,
                 limit=limit,
+                start_time=effective_start_time_ms,
                 from_id=next_from_id,
             )
 
@@ -185,7 +204,7 @@ class ExecutionService:
 
             if first_trade_id is None:
                 first_trade_id = page_min_trade_id
-            last_trade_id = page_max_trade_id
+            last_seen_trade_id = page_max_trade_id
 
             for row in rows:
                 execution = self._execution_from_trade_row(symbol=symbol, row=row)
@@ -202,6 +221,7 @@ class ExecutionService:
                 break
 
             next_from_id = page_max_trade_id + 1
+            effective_start_time_ms = None
 
         summary = ExecutionReconciliationResult(
             symbol=symbol,
@@ -211,11 +231,13 @@ class ExecutionService:
             duplicates=duplicates,
             pages_fetched=pages_fetched,
             from_trade_id=first_trade_id,
-            to_trade_id=last_trade_id,
+            to_trade_id=last_seen_trade_id,
+            used_start_time_ms=start_time_ms if last_trade_id is None else None,
+            used_from_id=(last_trade_id + 1) if last_trade_id is not None else None,
         )
 
         self.logger.info(
-            "Execution REST reconciliation completed | symbol=%s fetched=%s inserted=%s updated=%s duplicates=%s pages=%s range=[%s,%s]",
+            "Execution REST reconciliation completed | symbol=%s fetched=%s inserted=%s updated=%s duplicates=%s pages=%s range=[%s,%s] used_start_time_ms=%s used_from_id=%s",
             summary.symbol,
             summary.fetched,
             summary.inserted,
@@ -224,6 +246,8 @@ class ExecutionService:
             summary.pages_fetched,
             summary.from_trade_id,
             summary.to_trade_id,
+            summary.used_start_time_ms,
+            summary.used_from_id,
         )
         return summary
 

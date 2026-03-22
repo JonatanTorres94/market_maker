@@ -1,0 +1,23 @@
+{
+    "run_session_id": "paper_002",
+    "journal_base_path": "data/runs/paper_002/journals",
+    "total_orders": 22,
+    "fill_ratio": "0.4090909090909090909090909091",
+    "cancel_ratio": "0.5909090909090909090909090909",
+    "total_fills": 9,
+    "avg_edge_at_placement_bps": "0.0007378163239323797466377089609",
+    "adverse_selection_5s_bps": "3.390881435462491517297066433",
+    "adverse_selection_30s_bps": "4.740738136252886297328379349",
+    "notional_weighted_edge_at_placement_bps": "0.0007378198678751375308660032603",
+    "notional_weighted_adverse_selection_5s_bps": "3.434493135330330723023825458",
+    "notional_weighted_adverse_selection_30s_bps": "5.402375757988592597395184745",
+    "execution_pnl_source": "executions_reconciled.csv",
+    "total_executions": 12,
+    "total_quote_notional": "633.62348220",
+    "total_fees_in_quote": "0",
+    "executions_with_fee_resolved": 12,
+    "executions_with_fee_missing": 0,
+    "executions_with_fee_zero": 12,
+    "realized_pnl": "-0.1015305999999999999999999865",
+    "realized_pnl_bps_on_notional": "-1.602380638537515363568070528"
+}

@@ -58,6 +58,8 @@ def _get_enabled_symbols() -> List[str]:
 def get_settings() -> AppSettings:
     api_key = os.getenv("BINANCE_API_KEY")
     secret = os.getenv("BINANCE_SECRET")
+    binance_testnet = _get_bool("BINANCE_TESTNET", True)
+    account_name = os.getenv("ACCOUNT_NAME")
 
     if not api_key:
         raise ValueError("Missing BINANCE_API_KEY in environment variables")
@@ -65,17 +67,21 @@ def get_settings() -> AppSettings:
     if not secret:
         raise ValueError("Missing BINANCE_SECRET in environment variables")
 
+    if not binance_testnet and not account_name:
+        raise ValueError("Missing ACCOUNT_NAME in environment variables for live trading")
+
+    if not account_name:
+        account_name = "default"
+
     enabled_symbols = _get_enabled_symbols()
     if not enabled_symbols:
         raise ValueError("At least one symbol must be configured in ENABLED_SYMBOLS")
 
     infrastructure = InfrastructureSettings(
-        account_name = os.getenv("ACCOUNT_NAME")
-        if not account_name:
-            raise ValueError("Missing ACCOUNT_NAME in environment variables")
+        account_name=account_name,
         binance_api_key=api_key,
         binance_secret=secret,
-        binance_testnet=_get_bool("BINANCE_TESTNET", True),
+        binance_testnet=binance_testnet,
         enabled_symbols=enabled_symbols,
         engine_loop_sleep_seconds=_get_float("ENGINE_LOOP_SLEEP_SECONDS", "0.25"),
         market_event_timeout_seconds=_get_float("MARKET_EVENT_TIMEOUT_SECONDS", "2.0"),

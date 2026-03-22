@@ -91,7 +91,10 @@ class MarketMakingEngine:
 
         self._last_rest_sync_at = 0.0
         self._last_execution_rest_sync_at = 0.0
+        self._execution_session_start_ms = int(datetime.now(UTC).timestamp() * 1000)
         self._ws_started = False
+        self._shutdown_started = False
+        self._shutdown_completed = False
 
     def run(self) -> None:
         self.logger.info("Starting market making engine for %s", self.symbol)
@@ -259,29 +262,61 @@ class MarketMakingEngine:
                     time.sleep(self.infrastructure.engine_loop_sleep_seconds)
 
         except KeyboardInterrupt:
-            self.logger.info("Stopping engine...")
-            self.shutdown()
+            self.logger.info("Engine loop interrupted by termination signal.")
+            raise
 
     def shutdown(self) -> None:
+        if self._shutdown_completed:
+            self.logger.info("Shutdown already completed. Ignoring duplicate shutdown call.")
+            return
+
+        if self._shutdown_started:
+            self.logger.info("Shutdown already in progress. Ignoring duplicate shutdown call.")
+            return
+
+        self._shutdown_started = True
+
         try:
             self.logger.info("Initiating graceful shutdown...")
+
+            # 1. Drenar eventos pendientes del user stream para no perder fills recientes.
             self._apply_user_stream_events()
-            self._sync_active_orders_via_rest()
+
+            # 2. Reconciliar executions de sesión antes de tocar órdenes.
             self._reconcile_executions_via_rest()
 
+            # 3. Sincronizar estado actual de órdenes.
+            self._sync_active_orders_via_rest()
+
+            # 4. Cancelar todas las órdenes activas que sigan trackeadas.
             canceled_count = self._cancel_all_tracked_active_orders()
             self.logger.info("Canceled %s active orders on shutdown", canceled_count)
 
-            self._sync_active_orders_via_rest()
+            # 5. Re-drenar por si entraron updates/fills durante la cancelación.
+            self._apply_user_stream_events()
+
+            # 6. Reconciliar executions otra vez para capturar cualquier trade tardío.
             self._reconcile_executions_via_rest()
+
+            # 7. Sync final de órdenes post-cancel.
+            self._sync_active_orders_via_rest()
+
+            # 8. Log final del estado.
             self._log_local_state()
+
         except Exception as exc:
             self.logger.exception("Error during shutdown: %s", exc)
         finally:
-            self._stop_streams()
-            self.logger.info("Engine shutdown complete.")
+            try:
+                self._stop_streams()
+            finally:
+                self._shutdown_completed = True
+                self.logger.info("Engine shutdown complete.")
 
     def _start_streams(self) -> None:
+        if self._shutdown_started:
+            raise RuntimeError("Cannot start streams after shutdown has started.")
+
         if self._ws_started:
             return
 
@@ -292,6 +327,7 @@ class MarketMakingEngine:
 
     def _stop_streams(self) -> None:
         if not self._ws_started:
+            self.logger.info("Stream shutdown skipped because streams are already stopped.")
             return
 
         try:
@@ -346,6 +382,15 @@ class MarketMakingEngine:
     def _cancel_specific_order(self, order_id: int) -> int:
         local_order = self.state_store.get_order(order_id)
         if local_order is None:
+            self.logger.debug("Skipping cancel for unknown local order_id=%s", order_id)
+            return 0
+
+        if local_order.is_terminal:
+            self.logger.debug(
+                "Skipping cancel for terminal local order_id=%s status=%s",
+                order_id,
+                local_order.status,
+            )
             return 0
 
         self.state_store.mark_cancel_requested(
@@ -358,6 +403,10 @@ class MarketMakingEngine:
 
         payload = self.order_manager.cancel_order(symbol=self.symbol, order_id=order_id)
         if payload is None:
+            self.logger.info(
+                "Cancel returned no payload for order_id=%s. Assuming already closed or missing on exchange.",
+                order_id,
+            )
             return 0
 
         self.state_store.apply_status_sync(self._build_status_sync_event(payload))
@@ -457,13 +506,21 @@ class MarketMakingEngine:
 
     def _reconcile_executions_via_rest(self) -> None:
         try:
+            last_trade_id = self.execution_service.get_last_reconciled_trade_id(self.symbol)
+
+            start_time_ms = None
+            if last_trade_id is None:
+                start_time_ms = self._execution_session_start_ms
+
             summary = self.execution_service.reconcile_symbol(
                 symbol=self.symbol,
+                start_time_ms=start_time_ms,
                 limit=1000,
                 max_pages=1,
             )
+
             self.logger.info(
-                "Execution REST sync | fetched=%s inserted=%s updated=%s duplicates=%s pages=%s range=[%s,%s]",
+                "Execution REST sync | fetched=%s inserted=%s updated=%s duplicates=%s pages=%s range=[%s,%s] start_time_ms=%s last_trade_id_before=%s last_trade_id_after=%s",
                 summary.fetched,
                 summary.inserted,
                 summary.updated,
@@ -471,9 +528,16 @@ class MarketMakingEngine:
                 summary.pages_fetched,
                 summary.from_trade_id,
                 summary.to_trade_id,
+                summary.used_start_time_ms,
+                last_trade_id,
+                self.execution_service.get_last_reconciled_trade_id(self.symbol),
             )
         except BinanceAPIException as exc:
-            self.logger.warning("Execution REST reconciliation failed for symbol=%s: %s", self.symbol, exc)
+            self.logger.warning(
+                "Execution REST reconciliation failed for symbol=%s: %s",
+                self.symbol,
+                exc,
+            )
         finally:
             self._last_execution_rest_sync_at = time.monotonic()
 
@@ -525,12 +589,13 @@ class MarketMakingEngine:
             counts,
         )
         self.logger.info(
-            "Execution financial state | position=%s avg_cost=%s realized_pnl=%s applied_executions=%s last_trade_id=%s",
+            "Execution financial state | position=%s avg_cost=%s realized_pnl=%s applied_executions=%s last_trade_id=%s session_start_ms=%s",
             execution_position,
             execution_avg_cost,
             execution_realized_pnl,
             execution_count,
             last_reconciled_trade_id,
+            self._execution_session_start_ms,
         )
         self.logger.info(
             "Stream health | market_msgs=%s market_parse_errors=%s user_msgs=%s exec_reports=%s user_parse_errors=%s",

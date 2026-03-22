@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from src.domain.execution import Execution
-
+from src.core.run_paths import get_journal_base_path
 
 @dataclass(frozen=True)
 class ExecutionLedgerRecord:
@@ -45,15 +45,17 @@ class ExecutionLedgerState:
 
 
 class ExecutionLedger:
+    
     def __init__(
         self,
-        journal_path: str = "data/journals/execution_ledger.csv",
-        snapshot_path: str = "data/journals/execution_ledger_snapshot.json",
+        journal_path: str | None = None,
+        snapshot_path: str | None = None,
         snapshot_every: int = 1000,
     ):
+        base_path = get_journal_base_path()
         self.state = ExecutionLedgerState()
-        self.journal_path = Path(journal_path)
-        self.snapshot_path = Path(snapshot_path)
+        self.journal_path = Path(journal_path) if journal_path else Path(f"{base_path}/execution_ledger.csv")
+        self.snapshot_path = Path(snapshot_path) if snapshot_path else Path(f"{base_path}/execution_ledger_snapshot.json")
         self.snapshot_every = snapshot_every
         self._applied_keys: set[tuple[str, str, str, int]] = set()
         self._ensure_journal_header()

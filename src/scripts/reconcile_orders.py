@@ -4,10 +4,12 @@ from src.core.logger import setup_logger
 from src.exchange.binance_client import create_binance_client
 from src.exchange.order_manager import OrderManager
 from src.reconciliation.order_reconciler import OrderReconciler
-
+from src.core.run_paths import ensure_run_directories, get_journal_base_path, get_run_session_id
 
 def main():
+    ensure_run_directories()
     logger = setup_logger("reconcile_orders")
+    logger.info("Run context | session_id=%s journal_base_path=%s", get_run_session_id(), get_journal_base_path())
     settings = get_settings()
 
     if len(settings.infrastructure.enabled_symbols) != 1:

@@ -1,5 +1,6 @@
 #src/scripts/analyze_journal.py
 import csv
+import json
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from src.analytics.lifecycle_analytics import LifecycleAnalyticsAnalyzer
 from src.analytics.pnl_decomposition import PnLDecompositionAnalyzer
 from src.analytics.execution_pnl_analysis import ExecutionPnlAnalyzer
 from src.core.logger import setup_logger
+from src.core.run_paths import ensure_run_directories, get_journal_base_path, get_reports_base_path, get_run_session_id
 
 
 def read_csv(filepath: str) -> list[dict]:
@@ -27,11 +29,18 @@ def pct(value: Decimal) -> str:
 def main():
     logger = setup_logger("analyze_journal")
 
-    cycles = read_csv("data/journals/cycles.csv")
-    orders = read_csv("data/journals/orders.csv")
-    equity = read_csv("data/journals/equity.csv")
-    reconciled_orders = read_csv("data/journals/orders_reconciled.csv")
-    executions = read_csv("data/journals/executions.csv")
+    ensure_run_directories()
+    base_path = get_journal_base_path()
+    reports_base_path = Path(get_reports_base_path())
+    logger.info("Run context | session_id=%s journal_base_path=%s reports_base_path=%s",
+        get_run_session_id(),
+        base_path, reports_base_path)
+
+    cycles = read_csv(f"{base_path}/cycles.csv")
+    orders = read_csv(f"{base_path}/orders.csv")
+    equity = read_csv(f"{base_path}/equity.csv")
+    reconciled_orders = read_csv(f"{base_path}/orders_reconciled.csv")
+    executions = read_csv(f"{base_path}/executions.csv")
 
     logger.info("--- Journal Stats ---")
     logger.info("Cycles recorded: %s", len(cycles))
@@ -50,11 +59,11 @@ def main():
             "No executions found in data/journals/executions.csv. Financial execution PnL analysis will be empty."
         )
 
-    execution = ExecutionMetricsAnalyzer().analyze()
-    fill_quality = FillQualityAnalyzer().analyze()
-    pnl = PnLDecompositionAnalyzer().analyze()
-    lifecycle = LifecycleAnalyticsAnalyzer().analyze()
-    execution_pnl = ExecutionPnlAnalyzer().analyze()
+    execution = ExecutionMetricsAnalyzer(base_path=base_path).analyze()
+    fill_quality = FillQualityAnalyzer(base_path=base_path).analyze()
+    pnl = PnLDecompositionAnalyzer(base_path=base_path).analyze()
+    lifecycle = LifecycleAnalyticsAnalyzer(base_path=base_path).analyze()
+    execution_pnl = ExecutionPnlAnalyzer(base_path=base_path).analyze()
 
     logger.info("--- Execution Analytics ---")
     logger.info("Total Orders: %s", execution.total_orders)
@@ -167,6 +176,36 @@ def main():
     for reason, count in lifecycle.top_decision_reasons:
         logger.info("%s -> %s", reason, count)
 
+    reports_base_path.mkdir(parents=True, exist_ok=True)
+    summary_path = reports_base_path / "analysis_summary.json"
 
+    summary_payload = {
+        "run_session_id": get_run_session_id(),
+        "journal_base_path": base_path,
+        "total_orders": execution.total_orders,
+        "fill_ratio": str(execution.fill_ratio),
+        "cancel_ratio": str(execution.cancel_ratio),
+        "total_fills": fill_quality.total_fills,
+        "avg_edge_at_placement_bps": str(fill_quality.avg_edge_at_placement_bps),
+        "adverse_selection_5s_bps": str(fill_quality.adverse_selection_5s_bps),
+        "adverse_selection_30s_bps": str(fill_quality.adverse_selection_30s_bps),
+        "notional_weighted_edge_at_placement_bps": str(fill_quality.notional_weighted_edge_at_placement_bps),
+        "notional_weighted_adverse_selection_5s_bps": str(fill_quality.notional_weighted_adverse_selection_5s_bps),
+        "notional_weighted_adverse_selection_30s_bps": str(fill_quality.notional_weighted_adverse_selection_30s_bps),
+        "execution_pnl_source": execution_pnl.source_filename,
+        "total_executions": execution_pnl.total_executions,
+        "total_quote_notional": str(execution_pnl.total_quote_notional),
+        "total_fees_in_quote": str(execution_pnl.total_fees_in_quote),
+        "executions_with_fee_resolved": execution_pnl.executions_with_fee_resolved,
+        "executions_with_fee_missing": execution_pnl.executions_with_fee_missing,
+        "executions_with_fee_zero": execution_pnl.executions_with_fee_zero,
+        "realized_pnl": str(execution_pnl.realized_pnl),
+        "realized_pnl_bps_on_notional": str(execution_pnl.realized_pnl_bps_on_notional),
+    }
+
+    with summary_path.open("w", encoding="utf-8") as f:
+        json.dump(summary_payload, f, indent=4)
+
+    logger.info("Analysis summary written to %s", summary_path)
 if __name__ == "__main__":
     main()

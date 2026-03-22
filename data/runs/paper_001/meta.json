@@ -1,0 +1,12 @@
+{
+    "run_session_id": "paper_001",
+    "generated_at": "2026-03-22T21:15:55.845283+00:00",
+    "mode": "paper_runtime",
+    "account_name": "binance_paper_main",
+    "binance_testnet": true,
+    "enabled_symbols": [
+        "BTCUSDT"
+    ],
+    "journal_base_path": "data/runs/paper_001/journals",
+    "reports_base_path": "data/runs/paper_001/reports"
+}

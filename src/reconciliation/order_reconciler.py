@@ -8,19 +8,24 @@ from src.core.logger import setup_logger
 from src.domain.models import ReconciledOrderRecord, ReconciliationSummary
 from src.exchange.order_manager import OrderManager
 from src.journal.csv_journal import CsvJournalWriter
-
+from src.core.run_paths import get_journal_base_path
 
 class OrderReconciler:
     def __init__(
         self,
         order_manager: OrderManager,
-        orders_source_path: str = "data/journals/orders.csv",
-        reconciled_output_path: str = "data/journals/orders_reconciled.csv",
+        orders_source_path: str | None = None,
+        reconciled_output_path: str | None = None,
         bulk_limit: int = 1000,
         fallback_sleep_seconds: float = 0.05,
         window_hours: int = 12,
         max_bulk_pages: int = 10,
     ):
+        base_path = get_journal_base_path()
+
+        orders_source_path = orders_source_path or f"{base_path}/orders.csv"
+        reconciled_output_path = reconciled_output_path or f"{base_path}/orders_reconciled.csv"
+
         self.order_manager = order_manager
         self.orders_source_path = Path(orders_source_path)
         self.logger = setup_logger("order_reconciler")
