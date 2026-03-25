@@ -7,7 +7,7 @@ class TradeJournal:
         base_path = base_path or get_journal_base_path()
 
         self.cycles_writer = CsvJournalWriter(
-            filepath=f"{base_path}/cycles.csv",
+            filepath=f"{base_path}/cycles.csv",            
             fieldnames=[
                 "timestamp",
                 "symbol",
@@ -15,6 +15,10 @@ class TradeJournal:
                 "best_ask",
                 "spread",
                 "mid_price",
+                "mid_return_1s_bps",
+                "mid_return_3s_bps",
+                "mid_return_5s_bps",
+                "volatility_5s_bps",
                 "base_free",
                 "base_locked",
                 "base_total",
@@ -22,6 +26,7 @@ class TradeJournal:
                 "quote_locked",
                 "quote_total",
                 "inventory_bias",
+                "participation_mode",
                 "proposed_bid",
                 "proposed_ask",
                 "proposed_bid_qty",
@@ -72,6 +77,10 @@ class TradeJournal:
                 "best_ask": str(snapshot.best_ask),
                 "spread": str(snapshot.spread),
                 "mid_price": str(snapshot.mid_price),
+                "mid_return_1s_bps": str(snapshot.mid_return_1s_bps),
+                "mid_return_3s_bps": str(snapshot.mid_return_3s_bps),
+                "mid_return_5s_bps": str(snapshot.mid_return_5s_bps),
+                "volatility_5s_bps": str(snapshot.volatility_5s_bps),
                 "base_free": str(snapshot.base_free),
                 "base_locked": str(snapshot.base_locked),
                 "base_total": str(snapshot.base_total),
@@ -79,6 +88,7 @@ class TradeJournal:
                 "quote_locked": str(snapshot.quote_locked),
                 "quote_total": str(snapshot.quote_total),
                 "inventory_bias": snapshot.inventory_bias,
+                "participation_mode": snapshot.participation_mode,
                 "proposed_bid": "" if snapshot.proposed_bid is None else str(snapshot.proposed_bid),
                 "proposed_ask": "" if snapshot.proposed_ask is None else str(snapshot.proposed_ask),
                 "proposed_bid_qty": str(snapshot.proposed_bid_qty),

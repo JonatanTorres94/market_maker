@@ -28,6 +28,7 @@ from src.exchange.ws_market_stream import WsMarketDataStream
 from src.exchange.ws_user_stream import WsUserDataStream
 from src.journal.trade_journal import TradeJournal
 from src.risk.risk_manager import RiskManager
+from src.strategies.market_context import DriftSignalDetector, MarketContext
 from src.strategies.market_maker import MarketMakerConfig, MarketMakerStrategy
 
 
@@ -77,6 +78,8 @@ class MarketMakingEngine:
                 inventory_target=self.symbol_config.inventory_target,
                 inventory_tolerance=self.symbol_config.inventory_tolerance,
                 max_inventory_skew_factor=self.symbol_config.max_inventory_skew_factor,
+                drift_gate_lookback_seconds=self.symbol_config.drift_gate_lookback_seconds,
+                drift_gate_threshold_bps=self.symbol_config.drift_gate_threshold_bps,
             ),
             risk_manager=self.risk_manager,
         )
@@ -89,6 +92,8 @@ class MarketMakingEngine:
             )
         )
 
+        self.drift_signal_detector = DriftSignalDetector(max_window_seconds=5)
+        self.latest_market_context: MarketContext | None = None
         self._last_rest_sync_at = 0.0
         self._last_execution_rest_sync_at = 0.0
         self._execution_session_start_ms = int(datetime.now(UTC).timestamp() * 1000)
@@ -131,13 +136,26 @@ class MarketMakingEngine:
                     )
 
                     timestamp = utc_now_iso()
+
+                    market_context = self.drift_signal_detector.update(
+                        timestamp_iso=timestamp,
+                        mid_price=market.mid_price,
+                        spread=market.spread,
+                    )
+                    self.latest_market_context = market_context
+
                     inventory = self.order_manager.get_inventory_state(self.symbol)
                     inventory_bias = self.risk_manager.inventory_bias(inventory)
 
-                    quote = self.strategy.generate_quotes(market=market, inventory=inventory)
+                    quote = self.strategy.generate_quotes(
+                        market=market,
+                        inventory=inventory,
+                        market_context=market_context,
+                    )
 
                     self.logger.info(
-                        "Quote decision | bid=%s bid_qty=%s ask=%s ask_qty=%s reason=%s",
+                        "Quote decision | mode=%s bid=%s bid_qty=%s ask=%s ask_qty=%s reason=%s",
+                        quote.participation_mode,
                         quote.bid_price,
                         quote.bid_quantity,
                         quote.ask_price,
@@ -159,6 +177,13 @@ class MarketMakingEngine:
                         market.best_ask_price,
                         market.spread,
                         market.mid_price,
+                    )
+                    self.logger.info(
+                        "Market context | mid_return_1s_bps=%s mid_return_3s_bps=%s mid_return_5s_bps=%s volatility_5s_bps=%s",
+                        market_context.mid_return_1s_bps,
+                        market_context.mid_return_3s_bps,
+                        market_context.mid_return_5s_bps,
+                        market_context.volatility_5s_bps,
                     )
                     self.logger.info(
                         "Inventory | base_free=%s base_locked=%s base_total=%s quote_free=%s quote_locked=%s quote_total=%s bias=%s equity=%s",
@@ -208,6 +233,10 @@ class MarketMakingEngine:
                             best_ask=market.best_ask_price,
                             spread=market.spread,
                             mid_price=market.mid_price,
+                            mid_return_1s_bps=market_context.mid_return_1s_bps,
+                            mid_return_3s_bps=market_context.mid_return_3s_bps,
+                            mid_return_5s_bps=market_context.mid_return_5s_bps,
+                            volatility_5s_bps=market_context.volatility_5s_bps,
                             base_free=inventory.base_free,
                             base_locked=inventory.base_locked,
                             base_total=inventory.base_total,
@@ -215,6 +244,7 @@ class MarketMakingEngine:
                             quote_locked=inventory.quote_locked,
                             quote_total=inventory.quote_total,
                             inventory_bias=inventory_bias,
+                            participation_mode=quote.participation_mode.value,
                             proposed_bid=quote.bid_price,
                             proposed_ask=quote.ask_price,
                             proposed_bid_qty=quote.bid_quantity,

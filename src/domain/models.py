@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
-
+from src.strategies.market_context import QuoteParticipationMode
 
 @dataclass(frozen=True)
 class BestBidAsk:
@@ -89,6 +89,10 @@ class CycleSnapshot:
     best_ask: Decimal
     spread: Decimal
     mid_price: Decimal
+    mid_return_1s_bps: Decimal
+    mid_return_3s_bps: Decimal
+    mid_return_5s_bps: Decimal
+    volatility_5s_bps: Decimal
     base_free: Decimal
     base_locked: Decimal
     base_total: Decimal
@@ -96,6 +100,7 @@ class CycleSnapshot:
     quote_locked: Decimal
     quote_total: Decimal
     inventory_bias: str
+    participation_mode: str
     proposed_bid: Optional[Decimal]
     proposed_ask: Optional[Decimal]
     proposed_bid_qty: Decimal
@@ -169,4 +174,5 @@ class QuoteDecision:
     ask_price: Optional[Decimal]
     bid_quantity: Decimal
     ask_quantity: Decimal
+    participation_mode: QuoteParticipationMode
     reason: str

@@ -41,6 +41,8 @@ def main():
                     "inventory_target": str(cfg.inventory_target),
                     "inventory_tolerance": str(cfg.inventory_tolerance),
                     "max_inventory_skew_factor": str(cfg.max_inventory_skew_factor),
+                    "drift_gate_lookback_seconds": cfg.drift_gate_lookback_seconds,
+                    "drift_gate_threshold_bps": str(cfg.drift_gate_threshold_bps),
                     "min_base_inventory": str(cfg.min_base_inventory),
                     "max_base_inventory": str(cfg.max_base_inventory),
                     "min_quote_balance": str(cfg.min_quote_balance),

@@ -96,6 +96,8 @@ def get_settings() -> AppSettings:
         inventory_target=_get_decimal("INVENTORY_TARGET", "1.000"),
         inventory_tolerance=_get_decimal("INVENTORY_TOLERANCE", "0.005"),
         max_inventory_skew_factor=_get_decimal("MAX_INVENTORY_SKEW_FACTOR", "1"),
+        drift_gate_lookback_seconds=_get_int("DRIFT_GATE_LOOKBACK_SECONDS", "3"),
+        drift_gate_threshold_bps=_get_decimal("DRIFT_GATE_THRESHOLD_BPS", "1.5"),
         min_base_inventory=_get_decimal("MIN_BASE_INVENTORY", "0.995"),
         max_base_inventory=_get_decimal("MAX_BASE_INVENTORY", "1.005"),
         min_quote_balance=_get_decimal("MIN_QUOTE_BALANCE", "50"),

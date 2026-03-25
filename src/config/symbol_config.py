@@ -13,6 +13,8 @@ class SymbolTradingConfig:
     inventory_target: Decimal
     inventory_tolerance: Decimal
     max_inventory_skew_factor: Decimal
+    drift_gate_lookback_seconds: int
+    drift_gate_threshold_bps: Decimal
 
     # Risk
     min_base_inventory: Decimal
@@ -32,6 +34,8 @@ def build_symbol_config_map(
     inventory_target: Decimal,
     inventory_tolerance: Decimal,
     max_inventory_skew_factor: Decimal,
+    drift_gate_lookback_seconds: int,
+    drift_gate_threshold_bps: Decimal,
     min_base_inventory: Decimal,
     max_base_inventory: Decimal,
     min_quote_balance: Decimal,
@@ -53,6 +57,8 @@ def build_symbol_config_map(
             inventory_target=inventory_target,
             inventory_tolerance=inventory_tolerance,
             max_inventory_skew_factor=max_inventory_skew_factor,
+            drift_gate_lookback_seconds=drift_gate_lookback_seconds,
+            drift_gate_threshold_bps=drift_gate_threshold_bps,
             min_base_inventory=min_base_inventory,
             max_base_inventory=max_base_inventory,
             min_quote_balance=min_quote_balance,
