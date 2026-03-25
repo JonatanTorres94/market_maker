@@ -105,6 +105,10 @@ class CycleSnapshot:
     proposed_ask: Optional[Decimal]
     proposed_bid_qty: Decimal
     proposed_ask_qty: Decimal
+    bid_placeable: bool
+    ask_placeable: bool
+    bid_block_reason: str
+    ask_block_reason: str
     canceled_orders: int
     decision_reason: str
 

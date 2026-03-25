@@ -1,0 +1,10 @@
+
+
+RUN_SESSION_ID=paper_005 DRIFT_GATE_LOOKBACK_SECONDS=3 DRIFT_GATE_THRESHOLD_BPS=1.5 python -m src.scripts.create_paper_session
+
+
+RUN_SESSION_ID=paper_005 DRIFT_GATE_LOOKBACK_SECONDS=3 DRIFT_GATE_THRESHOLD_BPS=1.5 python -m src.scripts.run_market_maker > logs/logs.txt 2>&1
+
+
+
+RUN_SESSION_ID=paper_003 DRIFT_GATE_LOOKBACK_SECONDS=3 DRIFT_GATE_THRESHOLD_BPS=1.5 python -m src.scripts...

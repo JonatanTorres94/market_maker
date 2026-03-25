@@ -84,34 +84,25 @@ class MarketMakerStrategy:
                 reason="SPREAD_BELOW_THRESHOLD",
             )
 
-        bid_price = market.best_bid_price
-        ask_price = market.best_ask_price
-
-        participation_mode = self._determine_participation_mode(market_context)
+        drift_mode = self._determine_participation_mode(market_context)
+        participation_mode = drift_mode
 
         skew = self._compute_skew_factor(inventory)
-
         bid_quantity = self.config.base_quote_quantity
         ask_quantity = self.config.base_quote_quantity
 
         if skew > 0:
-            bid_quantity = self.config.base_quote_quantity * max(
-                Decimal("0"),
-                Decimal("1") - skew
-            )
-            ask_quantity = self.config.base_quote_quantity * min(
-                Decimal("2"),
-                Decimal("1") + skew
-            )
+            bid_quantity *= max(Decimal("0"), Decimal("1") - skew)
+            ask_quantity *= min(Decimal("2"), Decimal("1") + skew)
         elif skew < 0:
-            ask_quantity = self.config.base_quote_quantity * max(
-                Decimal("0"),
-                Decimal("1") + skew
-            )
-            bid_quantity = self.config.base_quote_quantity * min(
-                Decimal("2"),
-                Decimal("1") - skew
-            )
+            ask_quantity *= max(Decimal("0"), Decimal("1") + skew)
+            bid_quantity *= min(Decimal("2"), Decimal("1") - skew)
+
+        offset_bps = Decimal("1.5")
+        offset = market.mid_price * offset_bps / Decimal("10000")
+
+        bid_price = market.best_bid_price - offset
+        ask_price = market.best_ask_price + offset
 
         if participation_mode == QuoteParticipationMode.BID_ONLY:
             ask_price = None
@@ -119,21 +110,96 @@ class MarketMakerStrategy:
         elif participation_mode == QuoteParticipationMode.ASK_ONLY:
             bid_price = None
             bid_quantity = Decimal("0")
+        elif participation_mode == QuoteParticipationMode.NONE:
+            bid_price = None
+            ask_price = None
+            bid_quantity = Decimal("0")
+            ask_quantity = Decimal("0")
 
         required_quote = (
-            Decimal("0")
-            if bid_price is None or bid_quantity <= 0
-            else bid_price * bid_quantity
+            bid_price * bid_quantity
+            if bid_price is not None and bid_quantity > 0
+            else Decimal("0")
         )
 
-        can_bid = bid_quantity > 0 and self.risk_manager.can_place_bid(inventory, required_quote)
-        can_ask = ask_quantity > 0 and self.risk_manager.can_place_ask(inventory, ask_quantity)
+        can_bid = (
+            bid_price is not None
+            and bid_quantity > 0
+            and self.risk_manager.can_place_bid(inventory, required_quote)
+        )
+        can_ask = (
+            ask_price is not None
+            and ask_quantity > 0
+            and self.risk_manager.can_place_ask(inventory, ask_quantity)
+        )
+
+        effective_bid_price = bid_price if can_bid else None
+        effective_ask_price = ask_price if can_ask else None
+        effective_bid_quantity = bid_quantity if can_bid else Decimal("0")
+        effective_ask_quantity = ask_quantity if can_ask else Decimal("0")
+
+        if effective_bid_price is not None and effective_ask_price is not None:
+            effective_mode = QuoteParticipationMode.BOTH
+        elif effective_bid_price is not None:
+            effective_mode = QuoteParticipationMode.BID_ONLY
+        elif effective_ask_price is not None:
+            effective_mode = QuoteParticipationMode.ASK_ONLY
+        else:
+            effective_mode = QuoteParticipationMode.NONE
+
+        reason = (
+            f"OK|drift={drift_mode.value}"
+            f"|effective={effective_mode.value}"
+            f"|offset_bps={offset_bps}"
+        )
 
         return QuoteDecision(
-            bid_price=bid_price if can_bid else None,
-            ask_price=ask_price if can_ask else None,
-            bid_quantity=bid_quantity,
-            ask_quantity=ask_quantity,
-            participation_mode=participation_mode,
-            reason="OK",
+            bid_price=effective_bid_price,
+            ask_price=effective_ask_price,
+            bid_quantity=effective_bid_quantity,
+            ask_quantity=effective_ask_quantity,
+            participation_mode=effective_mode,
+            reason=reason,
         )
+
+    # def _apply_inventory_constraints(
+    #     self,
+    #     inventory: InventoryState,
+    #     initial_mode: QuoteParticipationMode,
+    # ) -> QuoteParticipationMode:
+
+    #     base_total = inventory.base_total
+    #     target = self.config.inventory_target
+    #     tolerance = self.config.inventory_tolerance
+
+    #     upper_bound = target + tolerance
+    #     lower_bound = target - tolerance
+
+    #     allow_bid = True
+    #     allow_ask = True
+
+    #     if base_total > upper_bound:
+    #         allow_bid = False
+
+    #     if base_total < lower_bound:
+    #         allow_ask = False
+
+    #     # Construcción final
+    #     if not allow_bid and not allow_ask:
+    #         return QuoteParticipationMode.NONE
+
+    #     if initial_mode == QuoteParticipationMode.BOTH:
+    #         if allow_bid and allow_ask:
+    #             return QuoteParticipationMode.BOTH
+    #         if allow_bid:
+    #             return QuoteParticipationMode.BID_ONLY
+    #         if allow_ask:
+    #             return QuoteParticipationMode.ASK_ONLY
+
+    #     if initial_mode == QuoteParticipationMode.BID_ONLY:
+    #         return QuoteParticipationMode.BID_ONLY if allow_bid else QuoteParticipationMode.NONE
+
+    #     if initial_mode == QuoteParticipationMode.ASK_ONLY:
+    #         return QuoteParticipationMode.ASK_ONLY if allow_ask else QuoteParticipationMode.NONE
+
+    #     return QuoteParticipationMode.NONE

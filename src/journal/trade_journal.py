@@ -8,7 +8,7 @@ class TradeJournal:
 
         self.cycles_writer = CsvJournalWriter(
             filepath=f"{base_path}/cycles.csv",            
-            fieldnames=[
+                fieldnames=[
                 "timestamp",
                 "symbol",
                 "best_bid",
@@ -31,6 +31,10 @@ class TradeJournal:
                 "proposed_ask",
                 "proposed_bid_qty",
                 "proposed_ask_qty",
+                "bid_placeable",
+                "ask_placeable",
+                "bid_block_reason",
+                "ask_block_reason",
                 "canceled_orders",
                 "decision_reason",
             ],
@@ -93,6 +97,10 @@ class TradeJournal:
                 "proposed_ask": "" if snapshot.proposed_ask is None else str(snapshot.proposed_ask),
                 "proposed_bid_qty": str(snapshot.proposed_bid_qty),
                 "proposed_ask_qty": str(snapshot.proposed_ask_qty),
+                "bid_placeable": str(snapshot.bid_placeable),
+                "ask_placeable": str(snapshot.ask_placeable),
+                "bid_block_reason": snapshot.bid_block_reason,
+                "ask_block_reason": snapshot.ask_block_reason,
                 "canceled_orders": snapshot.canceled_orders,
                 "decision_reason": snapshot.decision_reason,
             }

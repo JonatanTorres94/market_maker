@@ -11,3 +11,6 @@ env/
 # Logs
 journals/
 *.log
+
+data/
+logs/

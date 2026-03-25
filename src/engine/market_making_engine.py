@@ -7,10 +7,15 @@ from typing import Optional
 from binance import ThreadedWebsocketManager
 from binance.exceptions import BinanceAPIException
 
+
 from src.analytics.pnl import PnLService
 from src.config.settings import InfrastructureSettings
 from src.config.symbol_config import SymbolTradingConfig
+
+from src.core.exceptions import InvalidOrderRequestError
 from src.core.logger import setup_logger
+from src.core.utils.time_utils import exchange_ms_to_iso, utc_now_iso
+
 from src.domain.events import (
     ExecutionReceivedEvent,
     OrderCancelRequestedEvent,
@@ -100,200 +105,266 @@ class MarketMakingEngine:
         self._ws_started = False
         self._shutdown_started = False
         self._shutdown_completed = False
+    
+    def _is_order_placeable(
+        self,
+        side: str,
+        price: Decimal | None,
+        quantity: Decimal,
+    ) -> tuple[bool, str | None]:
+        if price is None or quantity <= 0:
+            return False, "price_or_quantity_disabled"
+
+        normalized_price = self.order_manager.normalize_price(price, self.filters)
+        normalized_quantity = self.order_manager.normalize_quantity(quantity, self.filters)
+
+        if normalized_quantity < self.filters.min_qty:
+            return False, (
+                f"normalized_qty_below_min_qty:"
+                f"{normalized_quantity}<{self.filters.min_qty}"
+            )
+
+        notional = normalized_price * normalized_quantity
+        if self.filters.min_notional > 0 and notional < self.filters.min_notional:
+            return False, (
+                f"normalized_notional_below_min_notional:"
+                f"{notional}<{self.filters.min_notional}"
+            )
+
+        return True, None
 
     def run(self) -> None:
-        self.logger.info("Starting market making engine for %s", self.symbol)
-        self.logger.info("Symbol config: %s", self.symbol_config)
+            self.logger.info("Starting market making engine for %s", self.symbol)
+            self.logger.info("Symbol config: %s", self.symbol_config)
 
-        self._start_streams()
+            self._start_streams()
 
-        try:
-            while True:
-                try:
-                    self._apply_user_stream_events()
+            try:
+                while True:
+                    try:
+                        self._apply_user_stream_events()
 
-                    if self._should_run_rest_sync():
-                        self._sync_active_orders_via_rest()
+                        if self._should_run_rest_sync():
+                            self._sync_active_orders_via_rest()
 
-                    if self._should_run_execution_rest_sync():
-                        self._reconcile_executions_via_rest()
+                        if self._should_run_execution_rest_sync():
+                            self._reconcile_executions_via_rest()
 
-                    market_event = self.market_stream.get_latest_event(
-                        timeout=self.infrastructure.market_event_timeout_seconds
-                    )
+                        market_event = self.market_stream.get_latest_event(
+                            timeout=self.infrastructure.market_event_timeout_seconds
+                        )
 
-                    if market_event is None:
-                        self.logger.warning("No market websocket event received within timeout window")
-                        time.sleep(self.infrastructure.engine_loop_sleep_seconds)
-                        continue
+                        if market_event is None:
+                            self.logger.warning("No market websocket event received within timeout window")
+                            time.sleep(self.infrastructure.engine_loop_sleep_seconds)
+                            continue
 
-                    market = BestBidAsk(
-                        symbol=market_event.symbol,
-                        best_bid_price=market_event.best_bid,
-                        best_bid_qty=Decimal("0"),
-                        best_ask_price=market_event.best_ask,
-                        best_ask_qty=Decimal("0"),
-                    )
+                        market = BestBidAsk(
+                            symbol=market_event.symbol,
+                            best_bid_price=market_event.best_bid,
+                            best_bid_qty=Decimal("0"),
+                            best_ask_price=market_event.best_ask,
+                            best_ask_qty=Decimal("0"),
+                        )
 
-                    timestamp = utc_now_iso()
+                        timestamp = utc_now_iso()
 
-                    market_context = self.drift_signal_detector.update(
-                        timestamp_iso=timestamp,
-                        mid_price=market.mid_price,
-                        spread=market.spread,
-                    )
-                    self.latest_market_context = market_context
-
-                    inventory = self.order_manager.get_inventory_state(self.symbol)
-                    inventory_bias = self.risk_manager.inventory_bias(inventory)
-
-                    quote = self.strategy.generate_quotes(
-                        market=market,
-                        inventory=inventory,
-                        market_context=market_context,
-                    )
-
-                    self.logger.info(
-                        "Quote decision | mode=%s bid=%s bid_qty=%s ask=%s ask_qty=%s reason=%s",
-                        quote.participation_mode,
-                        quote.bid_price,
-                        quote.bid_quantity,
-                        quote.ask_price,
-                        quote.ask_quantity,
-                        quote.reason,
-                    )
-
-                    equity = PnLService.mark_to_market(
-                        symbol=self.symbol,
-                        inventory=inventory,
-                        market=market,
-                        timestamp=timestamp,
-                    )
-                    self.journal.record_equity(equity)
-
-                    self.logger.info(
-                        "Market | bid=%s ask=%s spread=%s mid=%s",
-                        market.best_bid_price,
-                        market.best_ask_price,
-                        market.spread,
-                        market.mid_price,
-                    )
-                    self.logger.info(
-                        "Market context | mid_return_1s_bps=%s mid_return_3s_bps=%s mid_return_5s_bps=%s volatility_5s_bps=%s",
-                        market_context.mid_return_1s_bps,
-                        market_context.mid_return_3s_bps,
-                        market_context.mid_return_5s_bps,
-                        market_context.volatility_5s_bps,
-                    )
-                    self.logger.info(
-                        "Inventory | base_free=%s base_locked=%s base_total=%s quote_free=%s quote_locked=%s quote_total=%s bias=%s equity=%s",
-                        inventory.base_free,
-                        inventory.base_locked,
-                        inventory.base_total,
-                        inventory.quote_free,
-                        inventory.quote_locked,
-                        inventory.quote_total,
-                        inventory_bias,
-                        equity.mark_to_market_equity,
-                    )
-                    self._log_local_state()
-
-                    buy_active = self.state_store.get_active_order_by_side(self.symbol, "BUY")
-                    sell_active = self.state_store.get_active_order_by_side(self.symbol, "SELL")
-
-                    buy_decision = self.lifecycle.decide_side(
-                        active_order=buy_active,
-                        target_price=quote.bid_price,
-                        target_quantity=quote.bid_quantity,
-                        tick_size=self.filters.tick_size,
-                        now_iso=timestamp,
-                    )
-                    sell_decision = self.lifecycle.decide_side(
-                        active_order=sell_active,
-                        target_price=quote.ask_price,
-                        target_quantity=quote.ask_quantity,
-                        tick_size=self.filters.tick_size,
-                        now_iso=timestamp,
-                    )
-
-                    decision_reason = f"BUY:{buy_decision.reason}|SELL:{sell_decision.reason}"
-                    canceled_count = 0
-
-                    if buy_decision.should_cancel and buy_active is not None:
-                        canceled_count += self._cancel_specific_order(buy_active.order_id)
-
-                    if sell_decision.should_cancel and sell_active is not None:
-                        canceled_count += self._cancel_specific_order(sell_active.order_id)
-
-                    self.journal.record_cycle(
-                        CycleSnapshot(
-                            timestamp=timestamp,
-                            symbol=self.symbol,
-                            best_bid=market.best_bid_price,
-                            best_ask=market.best_ask_price,
-                            spread=market.spread,
+                        market_context = self.drift_signal_detector.update(
+                            timestamp_iso=timestamp,
                             mid_price=market.mid_price,
-                            mid_return_1s_bps=market_context.mid_return_1s_bps,
-                            mid_return_3s_bps=market_context.mid_return_3s_bps,
-                            mid_return_5s_bps=market_context.mid_return_5s_bps,
-                            volatility_5s_bps=market_context.volatility_5s_bps,
-                            base_free=inventory.base_free,
-                            base_locked=inventory.base_locked,
-                            base_total=inventory.base_total,
-                            quote_free=inventory.quote_free,
-                            quote_locked=inventory.quote_locked,
-                            quote_total=inventory.quote_total,
-                            inventory_bias=inventory_bias,
-                            participation_mode=quote.participation_mode.value,
-                            proposed_bid=quote.bid_price,
-                            proposed_ask=quote.ask_price,
-                            proposed_bid_qty=quote.bid_quantity,
-                            proposed_ask_qty=quote.ask_quantity,
-                            canceled_orders=canceled_count,
-                            decision_reason=decision_reason,
+                            spread=market.spread,
                         )
-                    )
+                        self.latest_market_context = market_context
 
-                    if buy_decision.should_place and quote.bid_price is not None and quote.bid_quantity > 0:
-                        self._place_order(
+                        inventory = self.order_manager.get_inventory_state(self.symbol)
+                        inventory_bias = self.risk_manager.inventory_bias(inventory)
+
+                        quote = self.strategy.generate_quotes(
+                            market=market,
+                            inventory=inventory,
+                            market_context=market_context,
+                        )
+
+                        self.logger.info(
+                            "Quote decision | mode=%s bid=%s bid_qty=%s ask=%s ask_qty=%s reason=%s",
+                            quote.participation_mode,
+                            quote.bid_price,
+                            quote.bid_quantity,
+                            quote.ask_price,
+                            quote.ask_quantity,
+                            quote.reason,
+                        )
+
+                        equity = PnLService.mark_to_market(
+                            symbol=self.symbol,
+                            inventory=inventory,
+                            market=market,
                             timestamp=timestamp,
-                            side="BUY",
-                            price=quote.bid_price,
-                            quantity=quote.bid_quantity,
+                        )
+                        self.journal.record_equity(equity)
+
+                        self.logger.info(
+                            "Market | bid=%s ask=%s spread=%s mid=%s",
+                            market.best_bid_price,
+                            market.best_ask_price,
+                            market.spread,
+                            market.mid_price,
+                        )
+                        
+                        self.logger.info(
+                            "Inventory | base_total=%s quote_total=%s bias=%s equity=%s",
+                            inventory.base_total,
+                            inventory.quote_total,
+                            inventory_bias,
+                            equity.mark_to_market_equity,
+                        )
+                        self._log_local_state()
+
+                        buy_active = self.state_store.get_active_order_by_side(self.symbol, "BUY")
+                        sell_active = self.state_store.get_active_order_by_side(self.symbol, "SELL")
+
+                        buy_decision = self.lifecycle.decide_side(
+                            active_order=buy_active,
+                            target_price=quote.bid_price,
+                            target_quantity=quote.bid_quantity,
+                            tick_size=self.filters.tick_size,
+                            now_iso=timestamp,
+                        )
+                        sell_decision = self.lifecycle.decide_side(
+                            active_order=sell_active,
+                            target_price=quote.ask_price,
+                            target_quantity=quote.ask_quantity,
+                            tick_size=self.filters.tick_size,
+                            now_iso=timestamp,
                         )
 
-                    if sell_decision.should_place and quote.ask_price is not None and quote.ask_quantity > 0:
-                        self._place_order(
-                            timestamp=timestamp,
-                            side="SELL",
-                            price=quote.ask_price,
-                            quantity=quote.ask_quantity,
+                        decision_reason = f"BUY:{buy_decision.reason}|SELL:{sell_decision.reason}"
+                        canceled_count = 0
+
+                        if buy_decision.should_cancel and buy_active is not None:
+                            canceled_count += self._cancel_specific_order(buy_active.order_id)
+
+                        if sell_decision.should_cancel and sell_active is not None:
+                            canceled_count += self._cancel_specific_order(sell_active.order_id)
+                        
+                        bid_placeable = False
+                        ask_placeable = False
+                        bid_block_reason = ""
+                        ask_block_reason = ""
+
+                        if quote.bid_price is not None and quote.bid_quantity > 0:
+                            bid_placeable, buy_block_reason = self._is_order_placeable(
+                                side="BUY",
+                                price=quote.bid_price,
+                                quantity=quote.bid_quantity,
+                            )
+                            bid_block_reason = "" if bid_placeable else (buy_block_reason or "")
+
+                        if quote.ask_price is not None and quote.ask_quantity > 0:
+                            ask_placeable, sell_block_reason = self._is_order_placeable(
+                                side="SELL",
+                                price=quote.ask_price,
+                                quantity=quote.ask_quantity,
+                            )
+                            ask_block_reason = "" if ask_placeable else (sell_block_reason or "")
+
+                        self.journal.record_cycle(
+                            CycleSnapshot(
+                                timestamp=timestamp,
+                                symbol=self.symbol,
+                                best_bid=market.best_bid_price,
+                                best_ask=market.best_ask_price,
+                                spread=market.spread,
+                                mid_price=market.mid_price,
+                                mid_return_1s_bps=market_context.mid_return_1s_bps,
+                                mid_return_3s_bps=market_context.mid_return_3s_bps,
+                                mid_return_5s_bps=market_context.mid_return_5s_bps,
+                                volatility_5s_bps=market_context.volatility_5s_bps,
+                                base_free=inventory.base_free,
+                                base_locked=inventory.base_locked,
+                                base_total=inventory.base_total,
+                                quote_free=inventory.quote_free,
+                                quote_locked=inventory.quote_locked,
+                                quote_total=inventory.quote_total,
+                                inventory_bias=inventory_bias,
+                                participation_mode=quote.participation_mode.value,
+                                proposed_bid=quote.bid_price,
+                                proposed_ask=quote.ask_price,
+                                proposed_bid_qty=quote.bid_quantity,
+                                proposed_ask_qty=quote.ask_quantity,
+                                bid_placeable=bid_placeable,
+                                ask_placeable=ask_placeable,
+                                bid_block_reason=bid_block_reason,
+                                ask_block_reason=ask_block_reason,
+                                canceled_orders=canceled_count,
+                                decision_reason=decision_reason,
+                            )
                         )
 
-                    self._apply_user_stream_events()
+                        # --- LÓGICA DE EJECUCIÓN CORREGIDA ---
 
-                    if self._should_run_rest_sync(force=True):
-                        self._sync_active_orders_via_rest()
+                        # 1. Procesar COMPRA (BUY)
+                        if buy_decision.should_place and quote.bid_price is not None and quote.bid_quantity > 0:
+                            if not bid_placeable:
+                                self.logger.info(
+                                    "Suppressed non-placeable BUY quote | price=%s qty=%s reason=%s",
+                                    quote.bid_price, quote.bid_quantity, bid_block_reason
+                                )
+                            else:
+                                try:
+                                    self._place_order(
+                                        timestamp=timestamp,
+                                        side="BUY",
+                                        price=quote.bid_price,
+                                        quantity=quote.bid_quantity,
+                                    )
+                                except InvalidOrderRequestError as exc:
+                                    self.logger.warning("Skipped invalid BUY order: %s", exc)
 
-                    if self._should_run_execution_rest_sync(force=True):
-                        self._reconcile_executions_via_rest()
+                        # 2. Procesar VENTA (SELL)
+                        if sell_decision.should_place and quote.ask_price is not None and quote.ask_quantity > 0:
+                            if not ask_placeable:
+                                self.logger.info(
+                                    "Suppressed non-placeable SELL quote | price=%s qty=%s reason=%s",
+                                    quote.ask_price, quote.ask_quantity, ask_block_reason
+                                )
+                            else:
+                                try:
+                                    self._place_order(
+                                        timestamp=timestamp,
+                                        side="SELL",
+                                        price=quote.ask_price,
+                                        quantity=quote.ask_quantity,
+                                    )
+                                except InvalidOrderRequestError as exc:
+                                    self.logger.warning("Skipped invalid SELL order: %s", exc)
 
-                    self._log_local_state()
-                    self._prune_terminal_cache_if_needed()
+                        # --- FIN LÓGICA DE EJECUCIÓN ---
 
-                    time.sleep(self.infrastructure.engine_loop_sleep_seconds)
+                        self._apply_user_stream_events()
 
-                except BinanceAPIException as exc:
-                    self.logger.exception("Binance API error in engine loop: %s", exc)
-                    time.sleep(self.infrastructure.engine_loop_sleep_seconds)
+                        if self._should_run_rest_sync(force=True):
+                            self._sync_active_orders_via_rest()
 
-                except Exception as exc:
-                    self.logger.exception("Engine loop failed: %s", exc)
-                    time.sleep(self.infrastructure.engine_loop_sleep_seconds)
+                        if self._should_run_execution_rest_sync(force=True):
+                            self._reconcile_executions_via_rest()
 
-        except KeyboardInterrupt:
-            self.logger.info("Engine loop interrupted by termination signal.")
-            raise
+                        self._log_local_state()
+                        self._prune_terminal_cache_if_needed()
+
+                        time.sleep(self.infrastructure.engine_loop_sleep_seconds)
+
+                    except BinanceAPIException as exc:
+                        self.logger.exception("Binance API error in engine loop: %s", exc)
+                        time.sleep(self.infrastructure.engine_loop_sleep_seconds)
+
+                    except Exception as exc:
+                        self.logger.exception("Engine loop failed: %s", exc)
+                        time.sleep(self.infrastructure.engine_loop_sleep_seconds)
+
+            except KeyboardInterrupt:
+                self.logger.info("Engine loop interrupted by termination signal.")
+                raise
 
     def shutdown(self) -> None:
         if self._shutdown_completed:
@@ -652,13 +723,3 @@ class MarketMakingEngine:
             status=order_payload["status"],
             updated_at=updated_at,
         )
-
-
-def utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat()
-
-
-def exchange_ms_to_iso(value: Optional[int]) -> str:
-    if value is None:
-        return utc_now_iso()
-    return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat()
