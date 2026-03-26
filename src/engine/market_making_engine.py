@@ -80,6 +80,7 @@ class MarketMakingEngine:
             config=MarketMakerConfig(
                 base_quote_quantity=self.symbol_config.base_quote_quantity,
                 min_spread=self.symbol_config.min_spread,
+                quote_offset_bps=self.symbol_config.quote_offset_bps,
                 inventory_target=self.symbol_config.inventory_target,
                 inventory_tolerance=self.symbol_config.inventory_tolerance,
                 max_inventory_skew_factor=self.symbol_config.max_inventory_skew_factor,
@@ -132,6 +133,21 @@ class MarketMakingEngine:
             )
 
         return True, None
+
+    def _selected_drift_bps(self, market_context: MarketContext) -> Decimal:
+        lookback_seconds = self.symbol_config.drift_gate_lookback_seconds
+
+        if lookback_seconds == 1:
+            return market_context.mid_return_1s_bps
+        if lookback_seconds == 3:
+            return market_context.mid_return_3s_bps
+        if lookback_seconds == 5:
+            return market_context.mid_return_5s_bps
+
+        raise ValueError(
+            f"Unsupported drift_gate_lookback_seconds={lookback_seconds}. "
+            "Expected 1, 3 or 5."
+    )
 
     def run(self) -> None:
             self.logger.info("Starting market making engine for %s", self.symbol)
@@ -223,19 +239,29 @@ class MarketMakingEngine:
                         buy_active = self.state_store.get_active_order_by_side(self.symbol, "BUY")
                         sell_active = self.state_store.get_active_order_by_side(self.symbol, "SELL")
 
+                        selected_drift_bps = self._selected_drift_bps(market_context)
+
+                        buy_adverse_drift_bps = max(Decimal("0"), -selected_drift_bps)
+                        sell_adverse_drift_bps = max(Decimal("0"), selected_drift_bps)
+
                         buy_decision = self.lifecycle.decide_side(
                             active_order=buy_active,
                             target_price=quote.bid_price,
                             target_quantity=quote.bid_quantity,
                             tick_size=self.filters.tick_size,
                             now_iso=timestamp,
+                            adverse_drift_bps=buy_adverse_drift_bps,
+                            adverse_drift_threshold_bps=self.symbol_config.drift_gate_threshold_bps,
                         )
+
                         sell_decision = self.lifecycle.decide_side(
                             active_order=sell_active,
                             target_price=quote.ask_price,
                             target_quantity=quote.ask_quantity,
                             tick_size=self.filters.tick_size,
                             now_iso=timestamp,
+                            adverse_drift_bps=sell_adverse_drift_bps,
+                            adverse_drift_threshold_bps=self.symbol_config.drift_gate_threshold_bps,
                         )
 
                         decision_reason = f"BUY:{buy_decision.reason}|SELL:{sell_decision.reason}"

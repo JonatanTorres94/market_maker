@@ -31,6 +31,8 @@ class QuoteLifecyclePolicy:
         target_quantity: Decimal,
         tick_size: Decimal,
         now_iso: str,
+        adverse_drift_bps: Decimal,
+        adverse_drift_threshold_bps: Decimal,
     ) -> SideLifecycleDecision:
         if target_price is None or target_quantity <= 0:
             if active_order is None:
@@ -50,6 +52,13 @@ class QuoteLifecyclePolicy:
                 should_cancel=False,
                 should_place=True,
                 reason="no_active_order_place_new",
+            )
+
+        if adverse_drift_bps >= adverse_drift_threshold_bps:
+            return SideLifecycleDecision(
+                should_cancel=True,
+                should_place=False,
+                reason=f"cancel_due_to_adverse_drift_{adverse_drift_bps}",
             )
 
         age_seconds = self._age_seconds(active_order.placed_at, now_iso)

@@ -1,3 +1,4 @@
+#src/config/symbol_config.py
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Dict, List
@@ -9,6 +10,7 @@ class SymbolTradingConfig:
 
     # Strategy
     base_quote_quantity: Decimal
+    quote_offset_bps: Decimal
     min_spread: Decimal
     inventory_target: Decimal
     inventory_tolerance: Decimal
@@ -30,6 +32,7 @@ class SymbolTradingConfig:
 def build_symbol_config_map(
     symbols: List[str],
     base_quote_quantity: Decimal,
+    quote_offset_bps: Decimal,
     min_spread: Decimal,
     inventory_target: Decimal,
     inventory_tolerance: Decimal,
@@ -53,6 +56,7 @@ def build_symbol_config_map(
         config_map[normalized_symbol] = SymbolTradingConfig(
             symbol=normalized_symbol,
             base_quote_quantity=base_quote_quantity,
+            quote_offset_bps=quote_offset_bps,
             min_spread=min_spread,
             inventory_target=inventory_target,
             inventory_tolerance=inventory_tolerance,

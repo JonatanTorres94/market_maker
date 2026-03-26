@@ -1,3 +1,4 @@
+#src/strategies/market_maker.py
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -10,6 +11,7 @@ from src.strategies.market_context import MarketContext, QuoteParticipationMode
 class MarketMakerConfig:
     base_quote_quantity: Decimal
     min_spread: Decimal
+    quote_offset_bps: Decimal
     inventory_target: Decimal
     inventory_tolerance: Decimal
     max_inventory_skew_factor: Decimal
@@ -98,11 +100,14 @@ class MarketMakerStrategy:
             ask_quantity *= max(Decimal("0"), Decimal("1") + skew)
             bid_quantity *= min(Decimal("2"), Decimal("1") - skew)
 
-        offset_bps = Decimal("1.5")
-        offset = market.mid_price * offset_bps / Decimal("10000")
+        offset_bps = self.config.quote_offset_bps
+        offset_fraction = offset_bps / Decimal("10000")
 
-        bid_price = market.best_bid_price - offset
-        ask_price = market.best_ask_price + offset
+        bid_price = market.best_bid_price * (Decimal("1") - offset_fraction)
+        ask_price = market.best_ask_price * (Decimal("1") + offset_fraction)
+
+        # bid_price = market.best_bid_price - offset
+        # ask_price = market.best_ask_price + offset
 
         if participation_mode == QuoteParticipationMode.BID_ONLY:
             ask_price = None

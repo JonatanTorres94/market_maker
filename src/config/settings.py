@@ -93,6 +93,7 @@ def get_settings() -> AppSettings:
         symbols=enabled_symbols,
         base_quote_quantity=_get_decimal("BASE_QUOTE_QUANTITY", "0.001"),
         min_spread=_get_decimal("MIN_SPREAD", "0.01"),
+        quote_offset_bps=_get_decimal("QUOTE_OFFSET_BPS", "1.5"),
         inventory_target=_get_decimal("INVENTORY_TARGET", "1.000"),
         inventory_tolerance=_get_decimal("INVENTORY_TOLERANCE", "0.005"),
         max_inventory_skew_factor=_get_decimal("MAX_INVENTORY_SKEW_FACTOR", "1"),
