@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from src.domain.models import InventoryState
+from src.domain.models import InventoryState, InventoryBias
 
 
 class RiskManager:
@@ -26,9 +26,11 @@ class RiskManager:
 
         return inventory.base_free >= order_qty
 
-    def inventory_bias(self, inventory: InventoryState) -> str:
-        if inventory.base_total >= self.max_base_inventory:
-            return "TOO_LONG_BASE"
-        if inventory.base_total <= self.min_base_inventory:
-            return "TOO_SHORT_BASE"
-        return "NEUTRAL"
+    def inventory_bias(self, inventory: InventoryState) -> InventoryBias:
+            if inventory.base_total >= self.max_base_inventory:
+                return InventoryBias.TOO_LONG
+                
+            if inventory.base_total <= self.min_base_inventory:
+                return InventoryBias.TOO_SHORT
+                
+            return InventoryBias.NEUTRAL

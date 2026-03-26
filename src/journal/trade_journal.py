@@ -1,3 +1,4 @@
+#src/journal/trade_journal.py
 from src.domain.models import CycleSnapshot, InventoryPnL, OrderPlacementRecord
 from src.journal.csv_journal import CsvJournalWriter
 from src.core.run_paths import get_journal_base_path

@@ -12,6 +12,9 @@ class SideLifecycleDecision:
     should_place: bool
     reason: str
 
+    cancel_reason_type: Optional[str] = None
+    cancel_reason_value: Optional[Decimal] = None
+
 
 @dataclass(frozen=True)
 class QuoteLifecycleConfig:
@@ -25,15 +28,27 @@ class QuoteLifecyclePolicy:
         self.config = config
 
     def decide_side(
-        self,
-        active_order: Optional[LocalOrderState],
-        target_price: Optional[Decimal],
-        target_quantity: Decimal,
-        tick_size: Decimal,
-        now_iso: str,
-        adverse_drift_bps: Decimal,
-        adverse_drift_threshold_bps: Decimal,
+    self,
+    active_order: Optional[LocalOrderState],
+    target_price: Optional[Decimal],
+    target_quantity: Decimal,
+    tick_size: Decimal,
+    now_iso: str,
+    adverse_drift_bps: Decimal,
+    adverse_drift_threshold_bps: Decimal,
     ) -> SideLifecycleDecision:
+        if adverse_drift_threshold_bps < 0:
+            raise ValueError("adverse_drift_threshold_bps must be >= 0")
+
+        if active_order is not None and adverse_drift_bps >= adverse_drift_threshold_bps:
+            return SideLifecycleDecision(
+                should_cancel=True,
+                should_place=False,
+                reason=f"cancel_due_to_adverse_drift_{adverse_drift_bps:.2f}_bps",
+                cancel_reason_type="adverse_drift_bps",
+                cancel_reason_value=adverse_drift_bps,
+            )
+
         if target_price is None or target_quantity <= 0:
             if active_order is None:
                 return SideLifecycleDecision(
@@ -52,13 +67,6 @@ class QuoteLifecyclePolicy:
                 should_cancel=False,
                 should_place=True,
                 reason="no_active_order_place_new",
-            )
-
-        if adverse_drift_bps >= adverse_drift_threshold_bps:
-            return SideLifecycleDecision(
-                should_cancel=True,
-                should_place=False,
-                reason=f"cancel_due_to_adverse_drift_{adverse_drift_bps}",
             )
 
         age_seconds = self._age_seconds(active_order.placed_at, now_iso)

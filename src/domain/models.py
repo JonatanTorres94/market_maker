@@ -1,3 +1,4 @@
+from enum import Enum
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
@@ -80,6 +81,10 @@ class PlacedOrders:
     buy_order_id: int | None
     sell_order_id: int | None
 
+class InventoryBias(Enum):
+    TOO_LONG = "TOO_LONG"
+    TOO_SHORT = "TOO_SHORT"
+    NEUTRAL = "NEUTRAL"
 
 @dataclass(frozen=True)
 class CycleSnapshot:
