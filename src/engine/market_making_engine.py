@@ -147,6 +147,21 @@ class MarketMakingEngine:
         raise ValueError(
             f"Unsupported drift_gate_lookback_seconds={lookback_seconds}. "
             "Expected 1, 3 or 5."
+        )
+
+    def _selected_drift_bps(self, market_context: MarketContext) -> Decimal:
+        lookback_seconds = self.symbol_config.drift_gate_lookback_seconds
+
+        if lookback_seconds == 1:
+            return market_context.mid_return_1s_bps
+        if lookback_seconds == 3:
+            return market_context.mid_return_3s_bps
+        if lookback_seconds == 5:
+            return market_context.mid_return_5s_bps
+
+        raise ValueError(
+            f"Unsupported drift_gate_lookback_seconds={lookback_seconds}. "
+            "Expected 1, 3 or 5."
     )
 
     def run(self) -> None:

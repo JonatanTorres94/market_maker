@@ -1,6 +1,6 @@
-#src/scripts/analyze_journal.py
 import csv
 import json
+import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -11,6 +11,9 @@ from src.analytics.pnl_decomposition import PnLDecompositionAnalyzer
 from src.analytics.execution_pnl_analysis import ExecutionPnlAnalyzer
 from src.core.logger import setup_logger
 from src.core.run_paths import ensure_run_directories, get_journal_base_path, get_reports_base_path, get_run_session_id
+
+
+DRIFT_CANCEL_PATTERN = re.compile(r"cancel_due_to_adverse_drift_([0-9]+(?:\.[0-9]+)?)")
 
 
 def read_csv(filepath: str) -> list[dict]:
@@ -26,15 +29,106 @@ def pct(value: Decimal) -> str:
     return f"{(value * Decimal('100')):.2f}%"
 
 
+def safe_decimal(raw: str | None, default: str = "0") -> Decimal:
+    if raw is None or raw == "":
+        return Decimal(default)
+    return Decimal(raw)
+
+
+def parse_side_reasons(reason: str) -> tuple[str | None, str | None]:
+    """
+    Espera formatos del tipo:
+    BUY:keep_existing_order|SELL:replace_due_to_price_delta_2_ticks
+    """
+    if not reason:
+        return None, None
+
+    buy_reason = None
+    sell_reason = None
+
+    parts = reason.split("|")
+    for part in parts:
+        if part.startswith("BUY:"):
+            buy_reason = part[len("BUY:"):]
+        elif part.startswith("SELL:"):
+            sell_reason = part[len("SELL:"):]
+
+    return buy_reason, sell_reason
+
+
+def extract_drift_cancel_value(reason: str | None) -> Decimal | None:
+    if not reason:
+        return None
+
+    match = DRIFT_CANCEL_PATTERN.search(reason)
+    if not match:
+        return None
+
+    return Decimal(match.group(1))
+
+
+def analyze_drift_cancels(cycles: list[dict]) -> dict:
+    total_drift_cancels = 0
+    buy_drift_cancels = 0
+    sell_drift_cancels = 0
+
+    buy_drift_values: list[Decimal] = []
+    sell_drift_values: list[Decimal] = []
+
+    for row in cycles:
+        decision_reason = row.get("decision_reason") or row.get("reason") or ""
+
+        buy_reason, sell_reason = parse_side_reasons(decision_reason)
+
+        buy_drift = extract_drift_cancel_value(buy_reason)
+        if buy_drift is not None:
+            total_drift_cancels += 1
+            buy_drift_cancels += 1
+            buy_drift_values.append(buy_drift)
+
+        sell_drift = extract_drift_cancel_value(sell_reason)
+        if sell_drift is not None:
+            total_drift_cancels += 1
+            sell_drift_cancels += 1
+            sell_drift_values.append(sell_drift)
+
+    all_drift_values = buy_drift_values + sell_drift_values
+
+    def avg(values: list[Decimal]) -> Decimal:
+        if not values:
+            return Decimal("0")
+        return sum(values, Decimal("0")) / Decimal(len(values))
+
+    def max_or_zero(values: list[Decimal]) -> Decimal:
+        return max(values) if values else Decimal("0")
+
+    def min_or_zero(values: list[Decimal]) -> Decimal:
+        return min(values) if values else Decimal("0")
+
+    return {
+        "total_drift_cancels": total_drift_cancels,
+        "buy_drift_cancels": buy_drift_cancels,
+        "sell_drift_cancels": sell_drift_cancels,
+        "avg_drift_cancel_bps": avg(all_drift_values),
+        "avg_buy_drift_cancel_bps": avg(buy_drift_values),
+        "avg_sell_drift_cancel_bps": avg(sell_drift_values),
+        "max_drift_cancel_bps": max_or_zero(all_drift_values),
+        "min_drift_cancel_bps": min_or_zero(all_drift_values),
+    }
+
+
 def main():
     logger = setup_logger("analyze_journal")
 
     ensure_run_directories()
     base_path = get_journal_base_path()
     reports_base_path = Path(get_reports_base_path())
-    logger.info("Run context | session_id=%s journal_base_path=%s reports_base_path=%s",
+    logger.info(
+        "Run context | session_id=%s journal_base_path=%s reports_base_path=%s",
         get_run_session_id(),
-        base_path, reports_base_path)
+        base_path,
+        reports_base_path,
+    )
 
     cycles = read_csv(f"{base_path}/cycles.csv")
     orders = read_csv(f"{base_path}/orders.csv")
@@ -64,6 +158,7 @@ def main():
     pnl = PnLDecompositionAnalyzer(base_path=base_path).analyze()
     lifecycle = LifecycleAnalyticsAnalyzer(base_path=base_path).analyze()
     execution_pnl = ExecutionPnlAnalyzer(base_path=base_path).analyze()
+    drift_cancel = analyze_drift_cancels(cycles)
 
     logger.info("--- Execution Analytics ---")
     logger.info("Total Orders: %s", execution.total_orders)
@@ -172,6 +267,16 @@ def main():
     logger.info("qty_change replace cycles: %s", lifecycle.qty_change_replace_cycles)
     logger.info("no_target cycles: %s", lifecycle.no_target_cycles)
 
+    logger.info("--- Drift Cancel Analytics ---")
+    logger.info("Total drift cancels: %s", drift_cancel["total_drift_cancels"])
+    logger.info("BUY drift cancels: %s", drift_cancel["buy_drift_cancels"])
+    logger.info("SELL drift cancels: %s", drift_cancel["sell_drift_cancels"])
+    logger.info("Avg drift cancel (bps): %s", drift_cancel["avg_drift_cancel_bps"])
+    logger.info("Avg BUY drift cancel (bps): %s", drift_cancel["avg_buy_drift_cancel_bps"])
+    logger.info("Avg SELL drift cancel (bps): %s", drift_cancel["avg_sell_drift_cancel_bps"])
+    logger.info("Max drift cancel (bps): %s", drift_cancel["max_drift_cancel_bps"])
+    logger.info("Min drift cancel (bps): %s", drift_cancel["min_drift_cancel_bps"])
+
     logger.info("--- Top Decision Reasons ---")
     for reason, count in lifecycle.top_decision_reasons:
         logger.info("%s -> %s", reason, count)
@@ -201,11 +306,21 @@ def main():
         "executions_with_fee_zero": execution_pnl.executions_with_fee_zero,
         "realized_pnl": str(execution_pnl.realized_pnl),
         "realized_pnl_bps_on_notional": str(execution_pnl.realized_pnl_bps_on_notional),
+        "drift_cancel_total": drift_cancel["total_drift_cancels"],
+        "drift_cancel_buy": drift_cancel["buy_drift_cancels"],
+        "drift_cancel_sell": drift_cancel["sell_drift_cancels"],
+        "avg_drift_cancel_bps": str(drift_cancel["avg_drift_cancel_bps"]),
+        "avg_buy_drift_cancel_bps": str(drift_cancel["avg_buy_drift_cancel_bps"]),
+        "avg_sell_drift_cancel_bps": str(drift_cancel["avg_sell_drift_cancel_bps"]),
+        "max_drift_cancel_bps": str(drift_cancel["max_drift_cancel_bps"]),
+        "min_drift_cancel_bps": str(drift_cancel["min_drift_cancel_bps"]),
     }
 
     with summary_path.open("w", encoding="utf-8") as f:
         json.dump(summary_payload, f, indent=4)
 
     logger.info("Analysis summary written to %s", summary_path)
+
+
 if __name__ == "__main__":
     main()

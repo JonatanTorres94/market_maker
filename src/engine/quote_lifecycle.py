@@ -106,6 +106,7 @@ class QuoteLifecyclePolicy:
     ) -> int:
         if tick_size <= 0:
             return 0
+
         delta = abs(target_price - current_price)
         return int(delta / tick_size)
 
@@ -116,6 +117,7 @@ class QuoteLifecyclePolicy:
     ) -> Decimal:
         if current_qty <= 0:
             return Decimal("1")
+
         return abs(target_qty - current_qty) / current_qty
 
     @staticmethod
