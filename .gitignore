@@ -14,3 +14,20 @@ journals/
 
 data/
 logs/
+
+run_paper_trading/
+run_live_trading/
+run_paper_loop.sh
+
+# Configuración de IDEs
+.vscode/
+.idea/
+
+
+/# Otros archivos
+*.bak
+*.tmp
+*.swp
+.DS_Store   
+*.paper_session_counter
+*.csv

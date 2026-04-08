@@ -2,6 +2,7 @@ from src.domain.models import CycleSnapshot
 from src.journal.trade_journal import TradeJournal
 from src.engine.execution_models import CycleState, ExecutionPlan, ExecutionOutcome
 
+
 class CycleRecorder:
     def __init__(self, journal: TradeJournal):
         self.journal = journal
@@ -9,7 +10,7 @@ class CycleRecorder:
     def record(self, state: CycleState, plan: ExecutionPlan, outcome: ExecutionOutcome):
         """Une las tres capas (Input, Decisión, Resultado) en un único Snapshot para el CSV."""
         snapshot = CycleSnapshot(
-            # 1. Datos del STATE (Lo que el bot vio)
+            # 1. Datos del STATE
             timestamp=state.timestamp,
             symbol=state.symbol,
             best_bid=state.market.best_bid_price,
@@ -28,7 +29,7 @@ class CycleRecorder:
             quote_total=state.inventory.quote_total,
             inventory_bias=state.inventory_bias,
 
-            # 2. Datos del PLAN (Lo que el bot decidió hacer)
+            # 2. Datos del PLAN
             participation_mode=plan.quote.participation_mode.value,
             proposed_bid=plan.quote.bid_price,
             proposed_ask=plan.quote.ask_price,
@@ -36,12 +37,15 @@ class CycleRecorder:
             proposed_ask_qty=plan.quote.ask_quantity,
             decision_reason=plan.decision_reason,
 
-            # 3. Datos del OUTCOME (Lo que realmente pasó)
+            # 3. Datos del OUTCOME
             bid_placeable=outcome.bid_ok,
             ask_placeable=outcome.ask_ok,
             bid_block_reason=outcome.bid_reason,
             ask_block_reason=outcome.ask_reason,
-            canceled_orders=outcome.canceled_count
+            canceled_orders=outcome.canceled_count,
+            placed_count=outcome.placed_count,
+            canceled_buy=outcome.canceled_buy,
+            canceled_sell=outcome.canceled_sell,
         )
-        
+
         self.journal.record_cycle(snapshot)

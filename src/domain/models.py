@@ -115,6 +115,9 @@ class CycleSnapshot:
     bid_block_reason: str
     ask_block_reason: str
     canceled_orders: int
+    placed_count: int
+    canceled_buy: int
+    canceled_sell: int
     decision_reason: str
 
 

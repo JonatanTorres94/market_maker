@@ -6,10 +6,9 @@ from src.core.run_paths import get_journal_base_path
 class TradeJournal:
     def __init__(self, base_path: str | None = None):
         base_path = base_path or get_journal_base_path()
-
         self.cycles_writer = CsvJournalWriter(
-            filepath=f"{base_path}/cycles.csv",            
-                fieldnames=[
+            filepath=f"{base_path}/cycles.csv",
+            fieldnames=[
                 "timestamp",
                 "symbol",
                 "best_bid",
@@ -37,10 +36,12 @@ class TradeJournal:
                 "bid_block_reason",
                 "ask_block_reason",
                 "canceled_orders",
+                "placed_count",
+                "canceled_buy",
+                "canceled_sell",
                 "decision_reason",
             ],
         )
-
         self.orders_writer = CsvJournalWriter(
             filepath=f"{base_path}/orders.csv",
             fieldnames=[
@@ -56,7 +57,6 @@ class TradeJournal:
                 "placed_at",
             ],
         )
-
         self.equity_writer = CsvJournalWriter(
             filepath=f"{base_path}/equity.csv",
             fieldnames=[
@@ -103,6 +103,9 @@ class TradeJournal:
                 "bid_block_reason": snapshot.bid_block_reason,
                 "ask_block_reason": snapshot.ask_block_reason,
                 "canceled_orders": snapshot.canceled_orders,
+                "placed_count": snapshot.placed_count,
+                "canceled_buy": snapshot.canceled_buy,
+                "canceled_sell": snapshot.canceled_sell,
                 "decision_reason": snapshot.decision_reason,
             }
         )

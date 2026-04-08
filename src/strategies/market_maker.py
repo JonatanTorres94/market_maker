@@ -1,7 +1,7 @@
 #src/strategies/market_maker.py
 from dataclasses import dataclass
 from decimal import Decimal
-
+from typing import Optional
 from src.domain.models import BestBidAsk, InventoryState, QuoteDecision
 from src.risk.risk_manager import RiskManager
 from src.strategies.market_context import MarketContext, QuoteParticipationMode
@@ -28,20 +28,24 @@ class MarketMakerStrategy:
         self.config = config
         self.risk_manager = risk_manager
 
-    def _compute_skew_factor(self, inventory: InventoryState) -> Decimal:
-        deviation = inventory.base_total - self.config.inventory_target
+    def _compute_skew_factor(
+        self,
+        inventory: InventoryState,
+        inventory_target: Decimal,
+    ) -> Decimal:
+        tolerance = self.config.inventory_tolerance
+        max_skew = self.config.max_inventory_skew_factor
 
-        if self.config.inventory_tolerance == Decimal("0"):
+        if tolerance <= 0:
             return Decimal("0")
 
-        normalized = deviation / self.config.inventory_tolerance
+        deviation = inventory.base_total - inventory_target
+        normalized = deviation / tolerance
 
-        if normalized > self.config.max_inventory_skew_factor:
-            return self.config.max_inventory_skew_factor
-
-        if normalized < -self.config.max_inventory_skew_factor:
-            return -self.config.max_inventory_skew_factor
-
+        if normalized > max_skew:
+            return max_skew
+        if normalized < -max_skew:
+            return -max_skew
         return normalized
 
     def _determine_participation_mode(
@@ -62,20 +66,50 @@ class MarketMakerStrategy:
                 f"Unsupported drift_gate_lookback_seconds={lookback_seconds}. Expected 1, 3 or 5."
             )
 
-        if drift_bps >= threshold_bps:
-            return QuoteParticipationMode.BID_ONLY
-
-        if drift_bps <= -threshold_bps:
-            return QuoteParticipationMode.ASK_ONLY
-
+        # En esta etapa del sistema no usamos one-sided quoting
+        # con una señal de drift simple, porque genera demasiada
+        # sensibilidad al régimen y empeora la robustez.
         return QuoteParticipationMode.BOTH
+
+    # def _determine_participation_mode ESTE ES EL ANTERIOR PERO MUY BUENO AUNQUE NO DIO RESULTADOS.(
+    #     self,
+    #     market_context: MarketContext,
+    # ) -> QuoteParticipationMode:
+    #     lookback_seconds = self.config.drift_gate_lookback_seconds
+    #     threshold_bps = self.config.drift_gate_threshold_bps
+
+    #     if lookback_seconds == 1:
+    #         drift_bps = market_context.mid_return_1s_bps
+    #     elif lookback_seconds == 3:
+    #         drift_bps = market_context.mid_return_3s_bps
+    #     elif lookback_seconds == 5:
+    #         drift_bps = market_context.mid_return_5s_bps
+    #     else:
+    #         raise ValueError(
+    #             f"Unsupported drift_gate_lookback_seconds={lookback_seconds}. Expected 1, 3 or 5."
+    #         )
+
+    #     if drift_bps >= threshold_bps:
+    #         return QuoteParticipationMode.BID_ONLY
+
+    #     if drift_bps <= -threshold_bps:
+    #         return QuoteParticipationMode.ASK_ONLY
+
+    #     return QuoteParticipationMode.BOTH
 
     def generate_quotes(
         self,
         market: BestBidAsk,
         inventory: InventoryState,
         market_context: MarketContext,
+        inventory_target_override: Decimal | None = None,
     ) -> QuoteDecision:
+        effective_inventory_target = (
+            inventory_target_override
+            if inventory_target_override is not None
+            else self.config.inventory_target
+        )
+
         if market.spread < self.config.min_spread:
             return QuoteDecision(
                 bid_price=None,
@@ -89,7 +123,14 @@ class MarketMakerStrategy:
         drift_mode = self._determine_participation_mode(market_context)
         participation_mode = drift_mode
 
-        skew = self._compute_skew_factor(inventory)
+        # IMPORTANTE:
+        # el skew debe calcularse contra el target efectivo del ciclo,
+        # no contra self.config.inventory_target fijo.
+        skew = self._compute_skew_factor(
+            inventory=inventory,
+            inventory_target=effective_inventory_target,
+        )
+
         bid_quantity = self.config.base_quote_quantity
         ask_quantity = self.config.base_quote_quantity
 
@@ -105,9 +146,6 @@ class MarketMakerStrategy:
 
         bid_price = market.best_bid_price * (Decimal("1") - offset_fraction)
         ask_price = market.best_ask_price * (Decimal("1") + offset_fraction)
-
-        # bid_price = market.best_bid_price - offset
-        # ask_price = market.best_ask_price + offset
 
         if participation_mode == QuoteParticipationMode.BID_ONLY:
             ask_price = None
@@ -156,6 +194,8 @@ class MarketMakerStrategy:
             f"OK|drift={drift_mode.value}"
             f"|effective={effective_mode.value}"
             f"|offset_bps={offset_bps}"
+            f"|target={effective_inventory_target}"
+            f"|skew={skew}"
         )
 
         return QuoteDecision(

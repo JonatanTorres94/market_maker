@@ -18,7 +18,8 @@ class OrderReconciler:
         reconciled_output_path: str | None = None,
         bulk_limit: int = 1000,
         fallback_sleep_seconds: float = 0.05,
-        window_hours: int = 12,
+        padding_hours: int = 1,
+        bulk_chunk_hours: int = 12,
         max_bulk_pages: int = 10,
     ):
         base_path = get_journal_base_path()
@@ -31,7 +32,8 @@ class OrderReconciler:
         self.logger = setup_logger("order_reconciler")
         self.bulk_limit = bulk_limit
         self.fallback_sleep_seconds = fallback_sleep_seconds
-        self.window_hours = window_hours
+        self.padding_hours = padding_hours
+        self.bulk_chunk_hours = bulk_chunk_hours
         self.max_bulk_pages = max_bulk_pages
 
         self.writer = CsvJournalWriter(
@@ -97,9 +99,8 @@ class OrderReconciler:
         if not placed_times:
             return None, None
 
-        min_dt = min(placed_times) - timedelta(hours=self.window_hours)
-        max_dt = max(placed_times) + timedelta(hours=self.window_hours)
-
+        min_dt = min(placed_times) - timedelta(hours=self.padding_hours)
+        max_dt = max(placed_times) + timedelta(hours=self.padding_hours)
         return int(min_dt.timestamp() * 1000), int(max_dt.timestamp() * 1000)
 
     def _fetch_bulk_orders(self, symbol: str, start_ms: int | None, end_ms: int | None, journal_order_ids: set[int]) -> tuple[dict[int, dict], int]:
@@ -211,6 +212,83 @@ class OrderReconciler:
         self.logger.info("Fallback resolved %s/%s missing orders", len(resolved), len(missing_order_ids))
         return resolved
 
+    def _split_time_range_into_chunks(
+        self,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[tuple[int, int]]:
+        if start_ms > end_ms:
+            return []
+
+        chunk_ms = self.bulk_chunk_hours * 60 * 60 * 1000
+        chunks: list[tuple[int, int]] = []
+
+        current_start = start_ms
+        while current_start <= end_ms:
+            current_end = min(current_start + chunk_ms - 1, end_ms)
+            chunks.append((current_start, current_end))
+            current_start = current_end + 1
+
+        return chunks
+
+    def _fetch_bulk_orders_chunked(
+        self,
+        symbol: str,
+        start_ms: int | None,
+        end_ms: int | None,
+        journal_order_ids: set[int],
+    ) -> tuple[dict[int, dict], int]:
+        if start_ms is None or end_ms is None:
+            return {}, 0
+
+        all_orders_map: dict[int, dict] = {}
+        total_pages_fetched = 0
+
+        chunks = self._split_time_range_into_chunks(start_ms, end_ms)
+
+        self.logger.info(
+            "Fetching chunked bulk orders for %s | chunks=%s chunk_hours=%s",
+            symbol,
+            len(chunks),
+            self.bulk_chunk_hours,
+        )
+
+        for index, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+            self.logger.info(
+                "Bulk chunk %s/%s | start_ms=%s end_ms=%s",
+                index,
+                len(chunks),
+                chunk_start,
+                chunk_end,
+            )
+
+            chunk_orders_map, pages_fetched = self._fetch_bulk_orders(
+                symbol=symbol,
+                start_ms=chunk_start,
+                end_ms=chunk_end,
+                journal_order_ids=journal_order_ids,
+            )
+
+            total_pages_fetched += pages_fetched
+
+            for order_id, order in chunk_orders_map.items():
+                all_orders_map[order_id] = order
+
+            matched_journal = len(journal_order_ids.intersection(all_orders_map.keys()))
+            self.logger.info(
+                "Chunk %s completed | accumulated_orders=%s matched_journal=%s/%s",
+                index,
+                len(all_orders_map),
+                matched_journal,
+                len(journal_order_ids),
+            )
+
+            if matched_journal >= len(journal_order_ids):
+                self.logger.info("Chunked bulk fetch achieved full journal coverage. Stopping early.")
+                break
+
+        return all_orders_map, total_pages_fetched
+
     def reconcile(self, symbol: str) -> ReconciliationSummary:
         recorded_orders = self._read_recorded_orders()
         symbol_rows = self._extract_symbol_rows(recorded_orders, symbol)
@@ -240,7 +318,7 @@ class OrderReconciler:
         self.logger.info("Starting reconciliation for %s | journal_orders=%s", symbol, len(unique_order_ids))
 
         journal_order_ids = set(unique_order_ids)
-        bulk_orders_map, bulk_pages_fetched = self._fetch_bulk_orders(
+        bulk_orders_map, bulk_pages_fetched = self._fetch_bulk_orders_chunked(
             symbol=symbol,
             start_ms=start_ms,
             end_ms=end_ms,

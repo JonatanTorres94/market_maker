@@ -97,7 +97,7 @@ class OrderCoordinator:
             self.logger.info("Cancel skipped | order_id=%s already terminal", order_id)
             return 0
 
-        # 1. Marcamos intención de cancelación (Optimistic Lock)
+        # 1) Intento local de cancel request
         self.state_store.mark_cancel_requested(
             OrderCancelRequestedEvent(
                 occurred_at=utc_now_iso(),
@@ -106,54 +106,69 @@ class OrderCoordinator:
             )
         )
 
-        # 2. Intentamos cancelar en el exchange
+        # 2) Intento de cancel en exchange
         try:
             payload = self.order_manager.cancel_order(
                 symbol=self.symbol,
                 order_id=order_id,
             )
-        except Exception as e:
-            self.logger.error("Exception during cancel_order for %s: %s", order_id, e)
+        except Exception as exc:
+            self.logger.error("Exception during cancel_order for %s: %s", order_id, exc)
             payload = None
 
-        # 3. MANEJO DE FALLO / PAYLOAD VACÍO (El "Ideal")
+        # 3) Fallback fuerte: si Binance devuelve vacío, REST sync pasa a ser la verdad
         if not payload:
-            self.logger.warning("Cancel failed or empty for %s. Triggering immediate REST sync...", order_id)
-            
-            # Sincronización inmediata vía REST para ver qué pasó realmente
-            # Esto evita que el bot crea que la orden sigue viva si se canceló por otro medio
-            # o que crea que se canceló si sigue abierta.
+            self.logger.warning(
+                "Cancel failed or empty for %s. Triggering immediate REST sync...",
+                order_id,
+            )
+
             sync_data = self.order_manager.get_order(self.symbol, order_id)
-            
-            if sync_data:
-                sync_event = to_domain_sync_event(sync_data)
-                self.state_store.apply_status_sync(sync_event)
-                self.logger.info("REST sync completed for %s | current_status=%s", order_id, sync_event.status)
-            else:
-                self.logger.error("Critical: Could not sync order %s via REST after failed cancel.", order_id)
-            
+            if not sync_data:
+                self.logger.error(
+                    "Critical: Could not sync order %s via REST after failed cancel.",
+                    order_id,
+                )
+                return 0
+
+            sync_event = to_domain_sync_event(sync_data)
+            self.state_store.apply_status_sync(sync_event)
+
+            self.logger.info(
+                "REST sync completed for %s | current_status=%s",
+                order_id,
+                sync_event.status,
+            )
+
+            # Importante: contar cancel confirmado aunque el cancel endpoint haya devuelto vacío
+            if str(sync_event.status).upper() == "CANCELED":
+                self.logger.info(
+                    "Cancel confirmed via REST sync | symbol=%s order_id=%s status=%s executedQty=%s",
+                    sync_event.symbol,
+                    sync_event.order_id,
+                    sync_event.status,
+                    sync_event.executed_qty,
+                )
+                return 1
+
+            # Si sigue OPEN / PARTIALLY_FILLED / FILLED, no contamos cancel confirmado
+            self.logger.warning(
+                "Cancel not confirmed after REST sync | symbol=%s order_id=%s status=%s",
+                sync_event.symbol,
+                sync_event.order_id,
+                sync_event.status,
+            )
             return 0
-        # 4. ÉXITO: Aplicamos el resultado del payload de cancelación
-        # Usamos una función auxiliar o acceso seguro para manejar dict u objeto
+
+        # 4) Camino normal: cancel endpoint devolvió payload útil
         sync_event = to_domain_sync_event(payload)
         self.state_store.apply_status_sync(sync_event)
 
-        # Extraemos los datos de forma segura (funciona para dict y para objeto)
-        def get_val(obj, key, default=None):
-            if isinstance(obj, dict):
-                return obj.get(key, default)
-            return getattr(obj, key, default)
-
-        p_symbol = get_val(payload, 'symbol', self.symbol)
-        p_order_id = get_val(payload, 'order_id', order_id)
-        p_status = get_val(payload, 'status', 'CANCELED')
-        p_exec_qty = get_val(payload, 'executed_qty', "unknown")
-
         self.logger.info(
             "Canceled order successfully | symbol=%s order_id=%s status=%s executedQty=%s",
-            p_symbol, 
-            p_order_id, 
-            p_status, 
-            p_exec_qty
+            sync_event.symbol,
+            sync_event.order_id,
+            sync_event.status,
+            sync_event.executed_qty,
         )
-        return 1
+        return 1 if str(sync_event.status).upper() == "CANCELED" else 0

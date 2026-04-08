@@ -1,6 +1,8 @@
+#src/engine/market_making_engine.py
 import time
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from typing import List, Any, Optional
 
 from binance import ThreadedWebsocketManager
 
@@ -9,7 +11,7 @@ from src.config.symbol_config import SymbolTradingConfig
 from src.core.logger import setup_logger
 from src.core.utils.time_utils import UTC, utc_now_iso
 
-from src.domain.models import BestBidAsk, InventoryBias
+from src.domain.models import BestBidAsk, InventoryBias, InventoryPnL
 from src.engine.execution_models import CycleState, ExecutionPlan, ExecutionOutcome
 from src.engine.execution_service import ExecutionService
 from src.engine.order_state_store import OrderStateStore
@@ -130,6 +132,8 @@ class MarketMakingEngine:
                         continue
                     
                     self._log_inventory_snapshot(state)
+                    self._record_equity_snapshot(state)
+
                     plan = self._build_execution_plan(state)
                     outcome = self._execute_plan(plan, state.timestamp)
                     self.recorder.record(state, plan, outcome)
@@ -146,6 +150,8 @@ class MarketMakingEngine:
 
         finally:
             self.shutdown()
+    
+    
 
     def _capture_cycle_state(self) -> CycleState | None:
         market_event = self.market_stream.get_latest_event(
@@ -189,12 +195,33 @@ class MarketMakingEngine:
         )
 
     def _build_execution_plan(self, state: CycleState) -> ExecutionPlan:
+        drift_bps = self._get_selected_drift(state.context)
+
+        threshhold = self.symbol_config.drift_gate_threshold_bps
+        dynamic_inventory_target = self.symbol_config.inventory_target
+
+        if drift_bps >= threshhold:
+            adjustment = Decimal("0.01") # limite duro (1% de BTC)
+            (drift_bps / Decimal("10")) # escalamos el drift para que a 1000 bps (10%) ajuste el target en 1%
+
+            if drift_bps < 0:
+                dynamic_inventory_target = max(
+                    self.symbol_config.min_base_inventory,
+                    self.symbol_config.inventory_target - adjustment
+                )
+            else:
+                dynamic_inventory_target = min(
+                    self.symbol_config.max_base_inventory,
+                    self.symbol_config.inventory_target + adjustment
+                )
+
+
         quote = self.strategy.generate_quotes(
             state.market,
             state.inventory,
             state.context,
+            inventory_target_override=dynamic_inventory_target,
         )
-        drift_bps = self._get_selected_drift(state.context)
 
         buy_active = self.state_store.get_active_order_by_side(self.symbol, "BUY")
         sell_active = self.state_store.get_active_order_by_side(self.symbol, "SELL")
@@ -220,8 +247,9 @@ class MarketMakingEngine:
         )
 
         self.logger.info(
-            "PLAN | drift=%s | buy_reason=%s | sell_reason=%s | bid_price=%s | bid_qty=%s | ask_price=%s | ask_qty=%s",
+            "PLAN | drift=%s | dynamic_inventory_target=%s | buy_reason=%s | sell_reason=%s | bid_price=%s | bid_qty=%s | ask_price=%s | ask_qty=%s",
             drift_bps,
+            dynamic_inventory_target,
             buy_decision.reason,
             sell_decision.reason,
             quote.bid_price,
@@ -229,13 +257,14 @@ class MarketMakingEngine:
             quote.ask_price,
             quote.ask_quantity,
         )
+
         return ExecutionPlan(
             quote=quote,
             buy_decision=buy_decision,
             sell_decision=sell_decision,
             drift_bps=drift_bps,
             decision_reason=(
-                f"drift={drift_bps}|"
+                f"drift={drift_bps}|target={dynamic_inventory_target}|"
                 f"BUY:{buy_decision.reason}|"
                 f"SELL:{sell_decision.reason}"
             ),
@@ -243,18 +272,25 @@ class MarketMakingEngine:
 
     def _execute_plan(self, plan: ExecutionPlan, timestamp: str) -> ExecutionOutcome:
         canceled_count = 0
+        canceled_buy = 0
+        canceled_sell = 0
+        placed_count = 0
 
         buy_active = self.state_store.get_active_order_by_side(self.symbol, "BUY")
         sell_active = self.state_store.get_active_order_by_side(self.symbol, "SELL")
 
         # 1. Cancelaciones
         if plan.buy_decision.should_cancel and buy_active is not None:
-            canceled_count += self.coordinator.cancel_order(buy_active.order_id)
+            cancel_result = self.coordinator.cancel_order(buy_active.order_id)
+            canceled_buy += cancel_result
+            canceled_count += cancel_result
 
         if plan.sell_decision.should_cancel and sell_active is not None:
-            canceled_count += self.coordinator.cancel_order(sell_active.order_id)
+            cancel_result = self.coordinator.cancel_order(sell_active.order_id)
+            canceled_sell += cancel_result
+            canceled_count += cancel_result
 
-        # 2. Validaciones y Colocación BUY
+        # 2. Validaciones y colocación BUY
         bid_ok, bid_reason = self.validator.validate_placeable(
             plan.quote.bid_price,
             plan.quote.bid_quantity,
@@ -265,9 +301,10 @@ class MarketMakingEngine:
                 side="BUY",
                 price=plan.quote.bid_price,
                 quantity=plan.quote.bid_quantity,
-            )   
+            )
+            placed_count += 1
 
-        # 3. Validaciones y Colocación SELL
+        # 3. Validaciones y colocación SELL
         ask_ok, ask_reason = self.validator.validate_placeable(
             plan.quote.ask_price,
             plan.quote.ask_quantity,
@@ -279,23 +316,29 @@ class MarketMakingEngine:
                 price=plan.quote.ask_price,
                 quantity=plan.quote.ask_quantity,
             )
+            placed_count += 1
 
         self.logger.info(
-            "OUTCOME | canceled=%s | bid_ok=%s | ask_ok=%s | drift=%s",
+            "OUTCOME | canceled=%s | canceled_buy=%s | canceled_sell=%s | placed=%s | bid_ok=%s | ask_ok=%s | drift=%s",
             canceled_count,
+            canceled_buy,
+            canceled_sell,
+            placed_count,
             bid_ok,
             ask_ok,
-            plan.drift_bps
+            plan.drift_bps,
         )
 
-        # 4. Retorno con el drift incluido
         return ExecutionOutcome(
             canceled_count=canceled_count,
+            placed_count=placed_count,
             bid_ok=bid_ok,
             bid_reason=bid_reason or "",
             ask_ok=ask_ok,
             ask_reason=ask_reason or "",
-            drift_bps=plan.drift_bps  # <--- AHORA SÍ COINCIDE CON EL MODELO
+            drift_bps=plan.drift_bps,
+            canceled_buy=canceled_buy,
+            canceled_sell=canceled_sell,
         )
 
     def _get_selected_drift(self, market_context: MarketContext) -> Decimal:
@@ -326,6 +369,29 @@ class MarketMakingEngine:
             bias_label,
             equity
         )
+
+    def _record_equity_snapshot(self, state: CycleState) -> None:
+            """
+            Persiste un snapshot de inventory/equity en el journal usando la Dataclass correcta.
+            """
+            equity = self._compute_equity(state)
+
+            # Creamos el registro estructurado que el Journal espera
+            record = InventoryPnL(
+                timestamp=state.timestamp,
+                symbol=state.symbol,
+                base_free=state.inventory.base_free,
+                base_locked=state.inventory.base_locked,
+                base_total=state.inventory.base_total,
+                quote_free=state.inventory.quote_free,
+                quote_locked=state.inventory.quote_locked,
+                quote_total=state.inventory.quote_total,
+                mid_price=state.market.mid_price,
+                mark_to_market_equity=equity
+            )
+
+            # Ahora pasamos el objeto, no argumentos sueltos
+            self.journal.record_equity(record)
 
     def _compute_equity(self, state: CycleState) -> Decimal:
         """
