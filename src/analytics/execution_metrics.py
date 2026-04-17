@@ -21,8 +21,9 @@ class ExecutionMetricsSummary:
 
 
 class ExecutionMetricsAnalyzer:
-    def __init__(self, base_path: str = "data/journals"):
+    def __init__(self, base_path: str = "data/journals", data: dict | None = None):
         self.base_path = Path(base_path)
+        self._data = data or {}
 
     def analyze(self) -> ExecutionMetricsSummary:
         orders = self._read_orders()
@@ -84,19 +85,20 @@ class ExecutionMetricsAnalyzer:
             average_time_to_cancel_seconds=self._average(cancel_lifetimes),
         )
 
-    def _read_orders(self) -> list[dict]:
-        path = self.base_path / "orders.csv"
+    def _read_csv(self, key: str) -> list[dict]:
+        if key in self._data:
+            return self._data[key]
+        path = self.base_path / f"{key}.csv"
         if not path.exists():
             return []
         with path.open("r", newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
 
+    def _read_orders(self) -> list[dict]:
+        return self._read_csv("orders")
+
     def _read_reconciled(self) -> list[dict]:
-        path = self.base_path / "orders_reconciled.csv"
-        if not path.exists():
-            return []
-        with path.open("r", newline="", encoding="utf-8") as f:
-            return list(csv.DictReader(f))
+        return self._read_csv("orders_reconciled")
 
     @staticmethod
     def _seconds_between(start_iso: str, end_iso: str) -> float:

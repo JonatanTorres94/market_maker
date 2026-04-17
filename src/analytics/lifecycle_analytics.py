@@ -17,8 +17,9 @@ class LifecycleAnalyticsSummary:
 
 
 class LifecycleAnalyticsAnalyzer:
-    def __init__(self, base_path: str = "data/journals"):
+    def __init__(self, base_path: str = "data/journals", data: dict | None = None):
         self.base_path = Path(base_path)
+        self._data = data or {}
 
     def analyze(self) -> LifecycleAnalyticsSummary:
         cycles = self._read_csv("cycles.csv")
@@ -72,9 +73,11 @@ class LifecycleAnalyticsAnalyzer:
         )
 
     def _read_csv(self, filename: str) -> list[dict]:
+        key = filename.replace(".csv", "")
+        if key in self._data:
+            return self._data[key]
         path = self.base_path / filename
         if not path.exists():
             return []
-
         with path.open("r", newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))

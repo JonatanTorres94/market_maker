@@ -1,56 +1,29 @@
-import csv
 import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 
 from src.core.logger import setup_logger
 from src.domain.models import ReconciledOrderRecord, ReconciliationSummary
 from src.exchange.order_manager import OrderManager
-from src.journal.csv_journal import CsvJournalWriter
-from src.core.run_paths import get_journal_base_path
+
 
 class OrderReconciler:
     def __init__(
         self,
         order_manager: OrderManager,
-        orders_source_path: str | None = None,
-        reconciled_output_path: str | None = None,
         bulk_limit: int = 1000,
         fallback_sleep_seconds: float = 0.05,
         padding_hours: int = 1,
         bulk_chunk_hours: int = 12,
         max_bulk_pages: int = 10,
     ):
-        base_path = get_journal_base_path()
-
-        orders_source_path = orders_source_path or f"{base_path}/orders.csv"
-        reconciled_output_path = reconciled_output_path or f"{base_path}/orders_reconciled.csv"
-
         self.order_manager = order_manager
-        self.orders_source_path = Path(orders_source_path)
         self.logger = setup_logger("order_reconciler")
         self.bulk_limit = bulk_limit
         self.fallback_sleep_seconds = fallback_sleep_seconds
         self.padding_hours = padding_hours
         self.bulk_chunk_hours = bulk_chunk_hours
         self.max_bulk_pages = max_bulk_pages
-
-        self.writer = CsvJournalWriter(
-            filepath=reconciled_output_path,
-            fieldnames=[
-                "timestamp",
-                "updated_at",
-                "symbol",
-                "order_id",
-                "side",
-                "status",
-                "price",
-                "orig_qty",
-                "executed_qty",
-                "cumulative_quote_qty",
-            ],
-        )
 
     @staticmethod
     def _utc_now_iso() -> str:
@@ -61,13 +34,6 @@ class OrderReconciler:
         if value is None:
             return datetime.now(UTC).isoformat()
         return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat()
-
-    def _read_recorded_orders(self) -> list[dict]:
-        if not self.orders_source_path.exists():
-            return []
-
-        with self.orders_source_path.open("r", encoding="utf-8") as file:
-            return list(csv.DictReader(file))
 
     def _extract_symbol_rows(self, recorded_orders: list[dict], symbol: str) -> list[dict]:
         return [row for row in recorded_orders if row["symbol"] == symbol]
@@ -289,12 +255,12 @@ class OrderReconciler:
 
         return all_orders_map, total_pages_fetched
 
-    def reconcile(self, symbol: str) -> ReconciliationSummary:
-        recorded_orders = self._read_recorded_orders()
-        symbol_rows = self._extract_symbol_rows(recorded_orders, symbol)
+    def reconcile(
+        self, symbol: str, orders_data: list[dict]
+    ) -> tuple[ReconciliationSummary, list[dict]]:
+        """Reconcile orders from pre-loaded data. Returns (summary, list of reconciled record dicts)."""
+        symbol_rows = self._extract_symbol_rows(orders_data, symbol)
         unique_order_ids = self._extract_unique_order_ids(symbol_rows)
-
-        self.writer.reset()
 
         if not unique_order_ids:
             self.logger.warning("No recorded orders found for %s", symbol)
@@ -312,7 +278,7 @@ class OrderReconciler:
                 bulk_pages_fetched=0,
                 fallback_requested_orders=0,
                 fallback_resolved_orders=0,
-            )
+            ), []
 
         start_ms, end_ms = self._extract_time_bounds_ms(symbol_rows)
         self.logger.info("Starting reconciliation for %s | journal_orders=%s", symbol, len(unique_order_ids))
@@ -384,14 +350,10 @@ class OrderReconciler:
             elif status in {"NEW", "PENDING_NEW"}:
                 open_orders += 1
 
-        if records_to_save:
-            self.writer.append_rows(records_to_save)
-            self.logger.info("Saved %s reconciled records to CSV", len(records_to_save))
-
         missing_orders = len(unique_order_ids) - reconciled_orders
         coverage_ratio = Decimal(reconciled_orders) / Decimal(len(unique_order_ids)) if unique_order_ids else Decimal("0")
 
-        return ReconciliationSummary(
+        summary = ReconciliationSummary(
             journal_orders=len(unique_order_ids),
             reconciled_orders=reconciled_orders,
             missing_orders=missing_orders,
@@ -406,3 +368,5 @@ class OrderReconciler:
             fallback_requested_orders=len(missing_after_bulk),
             fallback_resolved_orders=len(fallback_orders_map),
         )
+        self.logger.info("Saved %s reconciled records", len(records_to_save))
+        return summary, records_to_save

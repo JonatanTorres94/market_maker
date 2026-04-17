@@ -1,11 +1,10 @@
 #src/journal/trade_journal.py
 from src.domain.models import CycleSnapshot, InventoryPnL, OrderPlacementRecord
 from src.journal.csv_journal import CsvJournalWriter
-from src.core.run_paths import get_journal_base_path
+
 
 class TradeJournal:
-    def __init__(self, base_path: str | None = None):
-        base_path = base_path or get_journal_base_path()
+    def __init__(self, base_path: str = "data/journals"):
         self.cycles_writer = CsvJournalWriter(
             filepath=f"{base_path}/cycles.csv",
             fieldnames=[

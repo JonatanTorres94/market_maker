@@ -22,8 +22,9 @@ class PnLDecompositionSummary:
 
 
 class PnLDecompositionAnalyzer:
-    def __init__(self, base_path: str = "data/journals"):
+    def __init__(self, base_path: str = "data/journals", data: dict | None = None):
         self.base_path = Path(base_path)
+        self._data = data or {}
 
     def analyze(self) -> PnLDecompositionSummary:
         equity_rows = self._read_csv("equity.csv")
@@ -114,10 +115,12 @@ class PnLDecompositionAnalyzer:
         )
 
     def _read_csv(self, filename: str) -> list[dict]:
+        key = filename.replace(".csv", "")
+        if key in self._data:
+            return self._data[key]
         path = self.base_path / filename
         if not path.exists():
             return []
-
         with path.open("r", newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
 

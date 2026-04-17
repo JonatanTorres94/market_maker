@@ -42,6 +42,7 @@ class MarketMakingEngine:
         symbol_config: SymbolTradingConfig,
         execution_service: ExecutionService,
         order_manager: OrderManager | None = None,
+        journal=None,
     ):
         self.logger = setup_logger("market_making_engine")
         self.infrastructure = infrastructure
@@ -55,7 +56,7 @@ class MarketMakingEngine:
         self.order_manager = order_manager or OrderManager(client)
         self.execution_service = execution_service
         self.state_store = OrderStateStore()
-        self.journal = TradeJournal()
+        self.journal = journal if journal is not None else TradeJournal()
         self.filters = self.exchange_info.get_symbol_filters(self.symbol)
 
         # Servicios

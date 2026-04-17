@@ -21,20 +21,30 @@ class ExecutionPnlSummary:
     executions_with_fee_zero: int
 
 class ExecutionPnlAnalyzer:
-    def __init__(self, base_path: str = "data/journals"):
+    def __init__(self, base_path: str = "data/journals", data: dict | None = None):
         self.base_path = Path(base_path)
+        self._data = data or {}
 
     def analyze(self) -> ExecutionPnlSummary:
-        # CAMINO B: Intentar leer reconciliado, si no, ir al crudo
-        reconciled_file = self.base_path / "executions_reconciled.csv"
-        raw_file = self.base_path / "executions.csv"
-        
-        path_to_load = reconciled_file if reconciled_file.exists() else raw_file
-        
-        if not path_to_load.exists():
+        if "executions_reconciled" in self._data:
+            rows = self._data["executions_reconciled"]
+            source = "executions_reconciled"
+        elif "executions" in self._data:
+            rows = self._data["executions"]
+            source = "executions"
+        else:
+            reconciled_file = self.base_path / "executions_reconciled.csv"
+            raw_file = self.base_path / "executions.csv"
+            path_to_load = reconciled_file if reconciled_file.exists() else raw_file
+            if not path_to_load.exists():
+                return self._empty_summary()
+            rows = self._read_csv(path_to_load.name)
+            source = path_to_load.name
+
+        if not rows:
             return self._empty_summary()
 
-        rows = self._read_csv(path_to_load.name)
+        _ = source  # used only for source_filename below
         executions = [self._parse_execution(row) for row in rows]
         # Ordenar cronológicamente para que el Ledger calcule bien el avg_cost
         executions.sort(key=lambda e: (e.executed_at, e.trade_id))
@@ -75,7 +85,7 @@ class ExecutionPnlAnalyzer:
             realized_bps = (total_realized_pnl / total_quote_notional) * Decimal("10000")
 
         return ExecutionPnlSummary(
-            source_filename=path_to_load.name,
+            source_filename=source,
             total_executions=len(executions),
             total_symbols=len(symbols),
             total_quote_notional=total_quote_notional,
@@ -120,4 +130,5 @@ class ExecutionPnlAnalyzer:
         )
 
     def _empty_summary(self) -> ExecutionPnlSummary:
-        return ExecutionPnlSummary(0, 0, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), 0, 0, 0)
+        z = Decimal("0")
+        return ExecutionPnlSummary("", 0, 0, z, z, z, z, 0, 0, 0)
